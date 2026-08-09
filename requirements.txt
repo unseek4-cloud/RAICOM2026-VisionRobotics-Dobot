@@ -1,0 +1,9 @@
+# 不重复固定 torch/torchvision：用户当前 HKtest 已是 CUDA 12.1 版本，强制重装容易破坏环境。
+numpy>=1.26,<2.0
+PyYAML>=6.0,<7
+Pillow>=10,<13
+opencv-contrib-python>=4.9,<5
+ultralytics>=8.3,<9
+pyrealsense2>=2.55,<3
+PyQt5==5.15.11
+

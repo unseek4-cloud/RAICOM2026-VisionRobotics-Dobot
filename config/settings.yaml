@@ -1,0 +1,214 @@
+# ============================================================================
+# 2026 睿抗机器人开发者大赛（机器视觉/越疆）现场配置
+# 文件编码：UTF-8。所有距离统一使用 mm，角度统一使用 degree。
+#
+# 安全原则：占位值使用 null。只要关键项未填写，`python main.py --real` 就会
+# 拒绝启动机械臂。先运行 `python main.py --demo`，再按 README 完成低速真机验证。
+# ============================================================================
+
+application:
+  name: "睿抗2026视觉分拣监控台"
+  competition_timeout_s: 600       # 规则要求现场自动运行不超过 10 分钟
+  log_level: "INFO"
+  result_log_jsonl: "logs/results.jsonl"
+
+network:
+  # Dobot Vision Studio 4.1.2 在流程末端作为 TCP 客户端连接本程序。
+  dvs:
+    listen_host: "0.0.0.0"
+    port: 6001
+    accept_timeout_s: 1.0
+    receive_timeout_s: 1.0
+    max_line_bytes: 65536
+
+  # DobotStudio Pro 中运行的 Lua 脚本作为 TCP 客户端连接本程序。
+  # 2006 是本项目自定义端口，不是越疆控制器的 29999/30004 官方端口。
+  robot_bridge:
+    listen_host: "0.0.0.0"
+    port: 2006
+    command_timeout_s: 120.0
+    accept_timeout_s: 1.0
+    receive_timeout_s: 1.0
+    heartbeat_s: 5.0
+    max_line_bytes: 65536
+
+dvs:
+  encoding: "utf-8"
+  fallback_encoding: "gb18030"
+  terminator: "\n"
+  delimiter: ","
+  trigger_text: "TRIGGER\n"
+  task1_timeout_s: 30.0
+  expected_results: 1
+  # 现场任务书若明确必须有 a/b/c/二维码/字符等字段，在此填写；空列表表示只要收到
+  # 一条非空结果即可。示例：["a", "b", "c", "qr"]
+  required_fields: []
+
+camera:
+  serial: null                     # 多台 RealSense 时填写 D435 序列号
+  width: 640
+  height: 480
+  fps: 30
+  align_depth_to_color: true
+  warmup_frames: 30
+  flush_frames_after_motion: 8
+  depth_min_mm: 300.0              # 赛题给出的 D435 最小深度约 0.3 m
+  depth_max_mm: 1500.0
+  depth_patch_px: 9                # 目标中心邻域，中值抗噪；必须为奇数
+  temporal_depth_samples: 5
+  max_temporal_depth_spread_mm: 8.0 # 多帧差值过大时拒绝抓取
+  color_exposure: null             # null=自动曝光；固定曝光需现场实测
+  depth_exposure: null
+
+yolo:
+  device: "cuda:0"                # CUDA 不可用时程序自动回退 CPU 并报警
+  image_size: 640
+  confidence: 0.70
+  iou: 0.45
+  max_detections: 20
+  use_hsv_color_fallback: true
+  chinese_font: "C:/Windows/Fonts/msyh.ttc"
+
+  task2:
+    model: "models/task2.pt"
+    # 留空表示接受该模型输出的全部类别。若模型同时检测其他任务道具，应填写关键字，
+    # 例如 ["cube", "cylinder", "立方体", "圆柱体"]。
+    include_class_keywords: []
+    exclude_class_keywords: []
+
+  task3:
+    model: "models/task3.pt"
+    include_class_keywords: []
+    exclude_class_keywords: []
+    # 若任务三按“与已知图案是否一致”分类，在此填已知类别名；null 表示按模型类别分拣。
+    known_label: null
+
+calibration:
+  # 比赛现场重新标定后，将 opencvCalibration.exe 生成的文件复制为下列文件名。
+  eih_yaml: "config/calibration/CaliMatrixData.yaml"
+  transform_node: "CamToTipTransform"
+
+  # CamToTipTransform 通常表示“把相机坐标点变换到 Tip 坐标”的 4x4 矩阵。
+  # 若多点验证发现方向相反，将 invert_cam_to_tip 改为 true。
+  invert_cam_to_tip: false
+  matrix_translation_unit: "m"    # 示例文件平移量约 0.02~0.12，因此单位为 m
+
+  # Dobot 位姿到齐次矩阵的旋转约定。当前实现使用 Rz @ Ry @ Rx（ZYX 欧拉角）。
+  # 必须用 3 个以上已知点验证方向和误差后才允许抓取。
+  pose_rotation_order: "zyx"
+
+  # ★现场必填：机械臂固定在拍照位、空台面时，目标工作区台面的深度中值。
+  table_depth_mm: null
+
+  # ★现场必填：桌面无工件，吸盘刚好贴到台面时机械臂 TCP 的 Z。
+  robot_table_touch_z_mm: null
+
+  # 用户指定的计算式：抓取Z = 台面机器人Z + (空台深度 - 工件中心深度)。
+  # 正的 press_down_mm 会让吸盘在计算表面基础上再向下压一点；初次验证保持 0。
+  press_down_mm: 0.0
+  xy_offset_mm: [0.0, 0.0]
+  min_object_height_mm: 1.0
+  max_object_height_mm: 120.0
+
+robot:
+  model: "Dobot E6"
+  user_coordinate_index: null       # ★现场确认，与手眼标定/示教使用的用户坐标系一致
+  tool_coordinate_index: null       # ★现场确认，与吸盘 TCP 和 EIH 的 Tip 定义一致
+
+  # ★现场必填：相机完成 EIH 标定时使用的同一 Tip/TCP 在固定拍照位的位姿。
+  # [X, Y, Z, Rx, Ry, Rz]，单位 mm/degree。
+  photo_pose_mm_deg: [null, null, null, null, null, null]
+
+  # 第二层软件保护。请根据 E6 实际安装、用户坐标系和低速示教结果填写，不能照抄示例。
+  workspace_mm:
+    x: [null, null]
+    y: [null, null]
+    z: [null, null]
+
+  motion:
+    orientation_mm_deg: [null, null, null]  # 抓取姿态 [Rx,Ry,Rz]，通常吸盘竖直向下
+    z_up_sign: 1                     # ★用户坐标 Z 向上填 1；若现场坐标轴相反填 -1
+    approach_mm: 40.0               # 到抓取点正上方后再直线下降
+    pick_lift_mm: 80.0              # 吸取后 X/Y 不变，Z 抬高距离
+    release_retract_mm: 80.0
+    travel_speed_percent: 20        # 首次真机建议 5~10，验证后逐步提高
+    pick_speed_percent: 10
+    acceleration_percent: 20
+    settle_ms: 300
+
+  vacuum:
+    # E6/V4.5 官方脚本使用 ToolDO（末端）或 DO（底座）；参考文件的 SetIODO 不采用。
+    api: null                       # ★只能填 "ToolDO" 或 "DO"
+    io_index: null                   # ★现场确认末端吸盘数字输出号
+    on_value: 1                      # ★现场点动确认极性，若相反则与 off_value 交换
+    off_value: 0
+    suction_wait_ms: 700
+    release_wait_ms: 400
+    feedback_di_index: null          # 可选：有真空压力开关才填写；不能用DO状态冒充吸住
+    feedback_ok_level: 1
+    feedback_timeout_ms: 1500
+
+  lua:
+    # ★填写运行 Python 的电脑有线网卡 IP，不是机器人控制器 IP。
+    # 例如机器人 192.168.5.1、电脑可设 192.168.5.10。
+    pc_server_ip: ""
+    pc_server_port: 2006
+    reconnect_delay_ms: 2000
+
+  # 放置点只输入 XY；Lua 按用户要求保持吸取后的 Z 做水平移动，再下降 down_mm。
+  # route_key 的匹配顺序见 README。下面全部是占位项，真机前必须实测填写。
+  place_points:
+    task2:
+      default: {x_mm: null, y_mm: null, down_mm: null}
+      red:     {x_mm: null, y_mm: null, down_mm: null}
+      blue:    {x_mm: null, y_mm: null, down_mm: null}
+      green:   {x_mm: null, y_mm: null, down_mm: null}
+      yellow:  {x_mm: null, y_mm: null, down_mm: null}
+    task3:
+      default:   {x_mm: null, y_mm: null, down_mm: null}
+      match:     {x_mm: null, y_mm: null, down_mm: null}
+      not_match: {x_mm: null, y_mm: null, down_mm: null}
+
+tasks:
+  # 评分验证时所有工件同时出现，程序仍固定按 task1 -> task2 -> task3 顺序执行。
+  task1:
+    enabled: true
+    robot_action: "none"            # 规则文件只要求识别/测量并输出
+
+  task2:
+    enabled: true
+    expected_objects: 2
+    max_objects: 2
+    candidate_order: "left_to_right" # 可选：left_to_right / confidence / nearest_center
+    route_by: "color"               # color / shape / class
+    detect_timeout_s: 20.0
+    empty_confirm_frames: 8
+    stable_frames: 3
+    stable_center_tolerance_px: 12
+
+  task3:
+    enabled: true
+    # 规则说明原有 1 个，评分验证额外增加 1 个，且全部工件全程同时出现，因此默认 2。
+    expected_objects: 2
+    max_objects: 2
+    candidate_order: "left_to_right"
+    route_by: "match_or_class"
+    detect_timeout_s: 20.0
+    empty_confirm_frames: 8
+    stable_frames: 3
+    stable_center_tolerance_px: 12
+
+simulation:
+  # 模拟模式会生成 4 个工件、深度图、DVS 结果和 Lua 完成应答，可完整演示界面。
+  table_depth_mm: 700.0
+  robot_table_touch_z_mm: 100.0
+  command_delay_s: 0.15
+  place_points:
+    task2:
+      default: {x_mm: 260.0, y_mm: 120.0, down_mm: 80.0}
+      red:     {x_mm: 230.0, y_mm: 120.0, down_mm: 80.0}
+      blue:    {x_mm: 290.0, y_mm: 120.0, down_mm: 80.0}
+    task3:
+      default:   {x_mm: 260.0, y_mm: 170.0, down_mm: 80.0}
+      match:     {x_mm: 230.0, y_mm: 170.0, down_mm: 80.0}
+      not_match: {x_mm: 290.0, y_mm: 170.0, down_mm: 80.0}
