@@ -24,7 +24,7 @@ local CFG = {
     -- ★现场必填：比赛电脑有线网卡 IP。不是机器人 IP，也不能填 127.0.0.1。
     -- E6 默认 LAN1 常为 192.168.5.1，电脑可设同网段未占用地址，例如 .10。
     -- ----------------------------------------------------------------------
-    python_ip = "192.168.5.10",
+    python_ip = "192.168.5.100",
     python_port = 2006,
     connect_timeout_s = 5,
     write_timeout_s = 5,
@@ -32,23 +32,23 @@ local CFG = {
     max_line_bytes = 65536,
 
     -- ★现场必填：必须与 EIH 标定、示教点和吸盘 TCP 使用的坐标系一致。
-    user_index = nil,
-    tool_index = nil,
+    user_index = 0,
+    tool_index = 0,
 
     -- ★现场必填：固定拍照位 [X,Y,Z,Rx,Ry,Rz]，不能用 Home() 代替。
     photo_pose = {
-        x = nil, y = nil, z = nil,
-        rx = nil, ry = nil, rz = nil,
+        x = 160.0, y = -60.0, z = 430.0,
+        rx = 180.0, ry = 0, rz = 0,
     },
 
     -- ★现场必填：吸盘竖直抓取时的姿态。
-    pick_orientation = {rx = nil, ry = nil, rz = nil},
+    pick_orientation = {rx = 180.0, ry = 0, rz = 0},
 
     -- ★现场必填：按当前用户坐标系低速示教得到的软件工作空间。
     workspace = {
-        x_min = nil, x_max = nil,
-        y_min = nil, y_max = nil,
-        z_min = nil, z_max = nil,
+        x_min = 175.0, x_max = 290.0,
+        y_min = -150.0, y_max = 40.0,
+        z_min = 100.0, z_max = 435.0,
     },
 
     -- 运动参数。下列初值与 settings.yaml 一致；首次真机应在两处同步调低后再单步。
@@ -70,8 +70,8 @@ local CFG = {
     -- 必须点动确认 on_level/off_level 极性。
     -- ----------------------------------------------------------------------
     vacuum = {
-        api = nil,
-        io_index = nil,
+        api = ToolDO,
+        io_index = 1,
         on_level = 1,
         off_level = 0,
         suction_wait_ms = 700,
