@@ -89,6 +89,13 @@ class RuntimeFlowTests(unittest.TestCase):
             with self.subTest(item=item), self.assertRaises(TaskError):
                 TaskOrchestrator._validate_dvs_result(item)
 
+    def test_task3_uses_independent_place_table_reference(self) -> None:
+        """空放置台面和后续堆顶必须使用任务三自己的深度/TCP Z 参考。"""
+
+        convert = TaskOrchestrator._place_surface_z_from_reference
+        self.assertAlmostEqual(convert(388.0, 90.0, 388.0, 1), 90.0)
+        self.assertAlmostEqual(convert(388.0, 90.0, 363.0, 1), 115.0)
+
     def test_lua_bridge_builds_two_phase_task3_commands(self) -> None:
         bridge = _CapturingLuaBridge(self.settings)
         target = StackPlaceTarget(

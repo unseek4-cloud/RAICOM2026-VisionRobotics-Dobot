@@ -440,6 +440,37 @@ class TaskOrchestrator:
             ) from exc
 
         z_up_sign = int(self.settings.get("robot.motion.z_up_sign", 1))
+        raw_eih_surface_z = float(surface_xyz[2])
+        place_table_depth: float | None = None
+        place_table_touch_z: float | None = None
+        if self.simulation_world is None:
+            prefix = "tasks.task3.placement_vision"
+            place_table_depth = float(
+                self.settings.get(f"{prefix}.place_table_depth_mm")
+            )
+            place_table_touch_z = float(
+                self.settings.get(f"{prefix}.place_table_touch_z_mm")
+            )
+            referenced_surface_z = self._place_surface_z_from_reference(
+                place_table_depth,
+                place_table_touch_z,
+                surface_depth_mm,
+                z_up_sign,
+            )
+            surface_xyz = (
+                float(surface_xyz[0]),
+                float(surface_xyz[1]),
+                referenced_surface_z,
+            )
+            self.log.info(
+                "task3 放置参考换算：空台深度=%.2fmm，空台TCP Z=%.2fmm，"
+                "当前深度=%.2fmm → 顶面Z=%.2fmm（EIH原始Z=%.2fmm）",
+                place_table_depth,
+                place_table_touch_z,
+                surface_depth_mm,
+                referenced_surface_z,
+                raw_eih_surface_z,
+            )
         press_down = float(
             self.settings.get("tasks.task3.placement_vision.press_down_mm", 0.0)
         )
@@ -478,11 +509,19 @@ class TaskOrchestrator:
         det.extra.update(
             {
                 "place_surface_xyz_mm": surface_xyz,
+                "place_surface_eih_z_mm": raw_eih_surface_z,
                 "place_surface_depth_mm": surface_depth_mm,
                 "place_surface_valid_points": valid_points,
                 "place_release_z_mm": place_z,
             }
         )
+        if place_table_depth is not None and place_table_touch_z is not None:
+            det.extra.update(
+                {
+                    "place_table_depth_mm": place_table_depth,
+                    "place_table_touch_z_mm": place_table_touch_z,
+                }
+            )
         self.log.info(
             "task3 放置顶面：机器人=(%.2f,%.2f,%.2f)，深度=%.2fmm，"
             "工件高=%.2fmm，释放Z=%.2fmm，有效点=%d",
@@ -509,12 +548,33 @@ class TaskOrchestrator:
             "place_xy": [target.place_x_mm, target.place_y_mm],
             "inspection_pose": list(inspection_pose),
             "surface_xyz": list(surface_xyz),
+            "surface_eih_z_mm": raw_eih_surface_z,
             "surface_depth_mm": surface_depth_mm,
             "surface_valid_points": valid_points,
             "place_z_mm": place_z,
             "route": route_key,
             "hold_id": inspect_reply.command_id,
         }
+
+    @staticmethod
+    def _place_surface_z_from_reference(
+        empty_table_depth_mm: float,
+        table_touch_z_mm: float,
+        measured_depth_mm: float,
+        z_up_sign: int,
+    ) -> float:
+        """用独立放置台面参考深度换算当前台面或堆顶的机器人 Z。"""
+
+        values = (empty_table_depth_mm, table_touch_z_mm, measured_depth_mm)
+        if not all(math.isfinite(float(value)) for value in values):
+            raise TaskError("任务三放置台面参考值包含 NaN/Inf")
+        if empty_table_depth_mm <= 0 or measured_depth_mm <= 0:
+            raise TaskError("任务三放置台面参考深度和当前深度必须大于 0")
+        if z_up_sign not in (-1, 1):
+            raise TaskError("robot.motion.z_up_sign 只能为 1 或 -1")
+        return float(table_touch_z_mm) + z_up_sign * (
+            float(empty_table_depth_mm) - float(measured_depth_mm)
+        )
 
     def _measure_place_surface(
         self,

@@ -284,6 +284,7 @@ class Settings:
 
         placement_numbers = {
             "tasks.task3.placement_vision.depth_min_mm": (0.0, False),
+            "tasks.task3.placement_vision.place_table_depth_mm": (0.0, False),
             "tasks.task3.placement_vision.press_down_mm": (0.0, True),
             "tasks.task3.placement_vision.sample_radius_mm": (0.0, False),
             "tasks.task3.placement_vision.max_surface_spread_mm": (0.0, False),
@@ -297,6 +298,14 @@ class Settings:
             if not self._is_number(value) or invalid_bound:
                 relation = "不小于" if allow_equal else "大于"
                 issues.append(f"{key} 必须填写{relation} {minimum:g} 的有限数值")
+        place_table_touch_z = self.get(
+            "tasks.task3.placement_vision.place_table_touch_z_mm", None
+        )
+        if not self._is_number(place_table_touch_z):
+            issues.append(
+                "tasks.task3.placement_vision.place_table_touch_z_mm "
+                "必须填写有限实测值"
+            )
         for key, minimum in (
             ("tasks.task3.placement_vision.temporal_samples", 1),
             ("tasks.task3.placement_vision.min_valid_points", 3),

@@ -312,7 +312,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `detect_timeout_s`：当前任务等待可用检测的上限。
 - `stable_frames/stable_center_tolerance_px`：连续稳定帧判据，防止机械振动或瞬时误检。
 - `empty_confirm_frames`：连续多帧无当前任务目标才允许判断为空。一帧漏检不能结束任务。
-- `task3.placement_vision`：配置放置顶面多帧数、独立的 `depth_min_mm`、目标 XY 周围的点云取样半径/最少点数、允许的 Z 波动、释放轻压补偿和观察位安全间距。当前观察位为 `Z=410 mm`，堆顶会比抓取目标更靠近相机，因此放置测高下限为 `250 mm`，抓取区仍使用 `camera.depth_min_mm=300 mm`。视觉结果无效时保持吸盘并停止，绝不回退到固定高度。
+- `task3.placement_vision`：`place_table_depth_mm` 和 `place_table_touch_z_mm` 是独立的放置区空台深度/TCP Z 参考，必须在当前观察位、姿态和放置 XY 现场实测；实验室暂填 `388/90 mm`，比赛现场只改这里。当前顶面按“放置台面 TCP Z +（空台深度−实时顶面深度）”计算，所以后续工件仍会自动叠高。此节还配置独立的 `depth_min_mm`、点云取样、多帧波动、轻压补偿和观察位安全间距；视觉结果无效时保持吸盘并停止。
 
 ### 6.10 `simulation`
 

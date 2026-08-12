@@ -205,6 +205,11 @@ tasks:
       temporal_samples: 5          # 到放置观察位后连续识别的深度帧数
       # Z=410 时后续堆顶会比抓取区更靠近相机；仅放置测高使用 250，抓取仍使用 camera.depth_min_mm=300。
       depth_min_mm: 250.0
+      # ★比赛现场必改：必须在上面的 place_inspection_z_mm 观察位、同一姿态和放置 XY 实测。
+      # 空台时记录 D435 台面深度；再低速示教吸盘刚接触该台面时的 TCP Z。
+      # 当前顶面Z = place_table_touch_z_mm + (place_table_depth_mm - 当前深度)。
+      place_table_depth_mm: 388.0
+      place_table_touch_z_mm: 90.0
       sample_radius_mm: 8.0        # 在目标机器人 XY 周围取顶面点云的半径
       min_valid_points: 20
       max_surface_spread_mm: 4.0   # 多帧顶面 Z 波动超过此值则保持吸盘并停止
