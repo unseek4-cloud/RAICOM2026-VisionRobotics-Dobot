@@ -132,6 +132,9 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertIs(holding, False)
         self.assertAlmostEqual(float(fields["place_z"]), 149.5)
         self.assertAlmostEqual(float(fields["retract_z"]), 229.5)
+        # Lua 同时把 retract_z 用作低位水平转运高度，避免前往无逆解的
+        # (place_x, place_y, inspection_z) 高位终点。
+        self.assertLess(float(fields["retract_z"]), float(fields["inspection_z"]))
 
     def test_go_photo_carries_workspace_contract(self) -> None:
         """拍照命令也必须让 Lua 核对 Python 当前使用的工作空间。"""

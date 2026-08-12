@@ -131,6 +131,7 @@ robot:
     z_up_sign: 1                     # ★用户坐标 Z 向上填 1；若现场坐标轴相反填 -1
     approach_mm: 40.0               # 到抓取点正上方后再直线下降
     pick_lift_mm: 80.0              # 吸取后 X/Y 不变，Z 抬高距离
+    # 释放后回撤距离；任务三同时用作“释放Z → 低位水平转运Z”的净空距离。
     release_retract_mm: 80.0
     # 任务三持件识别放置顶面的绝对 Tip Z。现场实测 Z=417 已不可达，限制为 410：
     # 吸取后先在原 XY 竖直升至 410，再保持 Z=410 只移动 XY 到放置观察位。
@@ -214,7 +215,7 @@ tasks:
       min_valid_points: 20
       max_surface_spread_mm: 4.0   # 多帧顶面 Z 波动超过此值则保持吸盘并停止
       press_down_mm: 0.5           # 接触位置基础上轻压；首次真机建议设为 0
-      min_descent_clearance_mm: 20.0
+      min_descent_clearance_mm: 20.0 # 观察位到动态低位转运高度的最小垂直距离
 
 simulation:
   # 模拟模式会生成 4 个工件、深度图、DVS 结果和 Lua 完成应答，可完整演示界面。

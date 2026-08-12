@@ -494,7 +494,22 @@ class TaskOrchestrator:
                 f"{exc}"
             ) from exc
 
-        descent = z_up_sign * (target.inspection_z_mm - place_z)
+        release_retract = float(
+            self.settings.get("robot.motion.release_retract_mm", 80.0)
+        )
+        transfer_z = place_z + z_up_sign * release_retract
+        try:
+            self.calibration.validate_workspace(
+                (target.inspection_x_mm, target.inspection_y_mm, transfer_z)
+            )
+            self.calibration.validate_workspace((place_xy[0], place_xy[1], transfer_z))
+        except Exception as exc:
+            raise TaskError(
+                "任务三动态低位转运点超出工作空间；机械臂仍保持吸盘："
+                f"{exc}"
+            ) from exc
+
+        descent = z_up_sign * (target.inspection_z_mm - transfer_z)
         minimum_descent = float(
             self.settings.get(
                 "tasks.task3.placement_vision.min_descent_clearance_mm", 20.0
@@ -502,7 +517,7 @@ class TaskOrchestrator:
         )
         if not math.isfinite(descent) or descent < minimum_descent:
             raise TaskError(
-                f"任务三观察位到释放位仅有 {descent:.2f} mm 安全间距，"
+                f"任务三观察位到低位转运高度仅有 {descent:.2f} mm 安全间距，"
                 f"小于 {minimum_descent:.2f} mm；机械臂仍保持吸盘"
             )
 
@@ -513,6 +528,7 @@ class TaskOrchestrator:
                 "place_surface_depth_mm": surface_depth_mm,
                 "place_surface_valid_points": valid_points,
                 "place_release_z_mm": place_z,
+                "place_transfer_z_mm": transfer_z,
             }
         )
         if place_table_depth is not None and place_table_touch_z is not None:
@@ -524,11 +540,12 @@ class TaskOrchestrator:
             )
         self.log.info(
             "task3 放置顶面：机器人=(%.2f,%.2f,%.2f)，深度=%.2fmm，"
-            "工件高=%.2fmm，释放Z=%.2fmm，有效点=%d",
+            "工件高=%.2fmm，释放Z=%.2fmm，低位转运Z=%.2fmm，有效点=%d",
             *surface_xyz,
             surface_depth_mm,
             object_height_mm,
             place_z,
+            transfer_z,
             valid_points,
         )
         det.status = "顶面高度已识别，按视觉 Z 下放"
@@ -538,8 +555,13 @@ class TaskOrchestrator:
             target, inspect_reply.command_id, place_z
         )
         if action_reply.status not in ("done", "home", "ok"):
+            code = str(action_reply.raw.get("code", "")).strip()
+            phase = str(action_reply.raw.get("phase", "")).strip()
+            details = [value for value in (phase, code) if value]
+            marker = f"[{' / '.join(details)}] " if details else ""
             raise TaskError(
-                f"任务三动态放置失败（{action_reply.status}）：{action_reply.message}"
+                f"任务三动态放置失败（{action_reply.status}）："
+                f"{marker}{action_reply.message}"
             )
 
         return target, action_reply, {
@@ -552,6 +574,7 @@ class TaskOrchestrator:
             "surface_depth_mm": surface_depth_mm,
             "surface_valid_points": valid_points,
             "place_z_mm": place_z,
+            "transfer_z_mm": transfer_z,
             "route": route_key,
             "hold_id": inspect_reply.command_id,
         }

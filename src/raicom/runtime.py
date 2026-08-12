@@ -79,6 +79,11 @@ class SystemRuntime:
             "descend_place": "直线下降放置",
             "vacuum_off": "释放吸盘",
             "retract_place": "释放后垂直回撤",
+            "raise_inspection": "原抓取XY升到观察高度",
+            "at_place_inspection": "已到放置观察位",
+            "lower_at_inspection_xy": "观察XY垂直下降到低位转运高度",
+            "transfer_to_place_low": "保持低位高度水平移动到放置点",
+            "descend_place_visual_z": "按视觉Z垂直下降放置",
             "return_photo": "返回固定拍照位",
         }
         if command_id == "HELLO":

@@ -55,7 +55,7 @@ local CFG = {
     motion = {
         approach_mm = 40.0,       -- 抓取点上方的接近距离
         pick_lift_mm = 80.0,      -- 吸取后保持 X/Y 不变的抬升距离
-        release_retract_mm = 80.0,-- 释放后保持放置 X/Y 不变的回撤距离
+        release_retract_mm = 80.0,-- 释放回撤距离；任务三也作为低位转运净空
         -- 现场实测 Z=417 已不可达：原抓取 XY 只升至 410，随后保持 Z=410 仅移动 XY。
         place_inspection_z_mm = 410.0,
         z_up_sign = 1,            -- 标准用户坐标 Z 向上填 1；若现场相反填 -1
@@ -926,6 +926,14 @@ local function parse_stack_release_job(line)
     if not almost_equal(job.retract_z, expected_retract) then
         return nil, "CONFIG_MISMATCH_RETRACT_Z"
     end
+    -- retract_z 同时作为低位水平转运高度：必须在释放点上方、观察位下方。
+    local sign = CFG.motion.z_up_sign
+    if sign * (job.retract_z - job.place_z) <= 0 then
+        return nil, "TRANSFER_Z_NOT_ABOVE_PLACE"
+    end
+    if sign * (job.inspection_z - job.retract_z) <= 0 then
+        return nil, "TRANSFER_Z_NOT_BELOW_INSPECTION"
+    end
     return job, ""
 end
 
@@ -935,8 +943,14 @@ local function build_stack_release_poses(job)
             x = job.inspection_x, y = job.inspection_y, z = job.inspection_z,
             rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
         },
+        -- 不能在放置 XY 使用观察高度：现场 (250,120,410) 逆解无解。
+        -- 先在观察 XY 垂直降到动态低位，再保持该 Z 只移动 XY。
+        inspection_transfer = {
+            x = job.inspection_x, y = job.inspection_y, z = job.retract_z,
+            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
+        },
         place_transfer = {
-            x = job.place_x, y = job.place_y, z = job.inspection_z,
+            x = job.place_x, y = job.place_y, z = job.retract_z,
             rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
         },
         place = {
@@ -960,30 +974,41 @@ local function place_from_inspection(socket, command_id, poses)
     local holding_part = true
     local ok
     local code
+    local phase
 
     -- 一旦第二阶段开始运动，就不允许把失败后的未知位置当作观察位重试。
     active_hold.ready = false
-    send_status(socket, command_id, "running", {phase = "transfer_to_place"})
+    phase = "lower_at_inspection_xy"
+    send_status(socket, command_id, "running", {phase = phase})
+    ok, code = checked_movl(poses.inspection_transfer, CFG.motion.pick_v)
+    if not ok then return false, code, holding_part, phase end
+
+    phase = "transfer_to_place_low"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.place_transfer, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
-    send_status(socket, command_id, "running", {phase = "descend_place_visual_z"})
+    phase = "descend_place_visual_z"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.place, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
-    send_status(socket, command_id, "running", {phase = "vacuum_off"})
+    phase = "vacuum_off"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = set_vacuum(false)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
     holding_part = false
     active_hold = nil
 
-    send_status(socket, command_id, "running", {phase = "retract_place"})
+    phase = "retract_place"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.place_retract, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
+    phase = "return_photo"
     ok, code = go_photo(socket, command_id)
-    if not ok then return false, code, holding_part end
-    return true, "", holding_part
+    if not ok then return false, code, holding_part, phase end
+    return true, "", holding_part, "at_photo"
 end
 
 local function cache_and_send_terminal(socket, command_id, command, line, status, extra)
@@ -1171,7 +1196,9 @@ local function handle_line(socket, line)
         end
 
         send_status(socket, command_id, "accepted", {cmd = command})
-        local ok, code, holding_part = place_from_inspection(socket, command_id, poses)
+        local ok, code, holding_part, failed_phase = place_from_inspection(
+            socket, command_id, poses
+        )
         if ok then
             return cache_and_send_terminal(
                 socket, command_id, command, line, "done", {phase = "at_photo", holding_part = false}
@@ -1188,6 +1215,7 @@ local function handle_line(socket, line)
                 or "visual placement failed after release",
             recoverable = false,
             holding_part = holding_part,
+            phase = failed_phase,
         })
     elseif command == "pick_place" then
         local request_ok, request_error = validate_request_context(line)

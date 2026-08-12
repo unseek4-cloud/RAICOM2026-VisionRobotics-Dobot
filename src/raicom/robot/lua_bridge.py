@@ -590,6 +590,8 @@ class LuaBridgeServer:
                 with self._condition:
                     if pending.terminal is not None:
                         terminal = dict(pending.terminal)
+                        if "phase" not in terminal and pending.phases:
+                            terminal["phase"] = pending.phases[-1]
                         accepted = pending.accepted
                         break
                     if self._shutdown.is_set():
