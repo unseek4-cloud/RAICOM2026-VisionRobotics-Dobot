@@ -420,9 +420,13 @@ class TaskOrchestrator:
         self._emit_detection_row(det)
         inspect_reply = self.robot.pick_to_inspection(target)
         if inspect_reply.status not in ("done", "ok"):
+            code = str(inspect_reply.raw.get("code", "")).strip()
+            phase = str(inspect_reply.raw.get("phase", "")).strip()
+            details = [value for value in (phase, code) if value]
+            marker = f"[{' / '.join(details)}] " if details else ""
             raise TaskError(
                 f"任务三未能持件到达放置观察位（{inspect_reply.status}）："
-                f"{inspect_reply.message}"
+                f"{marker}{inspect_reply.message}"
             )
 
         # 此后若视觉失败，Lua 会保持真空和观察位，不擅自猜高度或释放工件。

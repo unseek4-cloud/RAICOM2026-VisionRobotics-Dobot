@@ -406,7 +406,7 @@ Lua 连接成功且本地 `CFG` 校验通过后发送：
 
 - `ping`：Python 在空闲且没有在途命令时自动发送，Lua 返回 `pong`；
 - `go_photo`：回拍照位；
-- `pick_to_inspection`：任务三抓取后保持真空，先在原抓取 XY 竖直升到 `place_inspection_z_mm`（当前现场值 `410 mm`），再保持该 Z 不变、只移动 XY 到由 EIH 相机偏移计算出的放置观察位；成功终态为 `phase=at_place_inspection` 和 `holding_part=true`；
+- `pick_to_inspection`：任务三抓取后保持真空，先在原抓取 XY 抬升 `pick_lift_mm`，保持该低位 Z 只移动到由 EIH 计算的观察 XY，再在这个已知可达的观察 XY 垂直升到 `place_inspection_z_mm`（当前 `410 mm`）；不会在任意抓取 XY 直接创建 `Z=410` 高位终点。成功终态为 `phase=at_place_inspection` 和 `holding_part=true`；
 - `place_from_inspection`：携带第一阶段命令 ID 作为 `hold_id`；测高后先在观察 XY 垂直下降到动态低位 `place_z + release_retract_mm`，再保持该 Z 只移动 XY 到放置点，最后垂直下降到视觉 `place_z`、释放、回撤并回拍照位。这样不会前往现场无逆解的 `(place_x, place_y, 410)` 高位终点。Lua 只接受与当前持件事务完全匹配的目标；
 - `stop_after_current`：当前命令执行完成后停止后续任务，不抢断正在执行的运动，不改变当前吸盘输出，也不等同实体急停。如果机械臂正在持件或处于异常保压状态，禁止依靠软件停止命令盲目断真空，必须隔离人员、防止工件坠落，再按现场安全操作流程人工处置。
 

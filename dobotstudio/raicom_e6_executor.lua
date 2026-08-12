@@ -783,6 +783,9 @@ local function parse_stack_pick_job(line)
     if not almost_equal(job.lift_z, job.pick_z + sign * CFG.motion.pick_lift_mm) then
         return nil, "CONFIG_MISMATCH_LIFT_Z"
     end
+    if sign * (job.inspection_z - job.lift_z) <= 0 then
+        return nil, "PICK_TRANSFER_Z_NOT_BELOW_INSPECTION"
+    end
     return job, ""
 end
 
@@ -800,8 +803,10 @@ local function build_stack_pick_poses(job)
             x = job.pick_x, y = job.pick_y, z = job.lift_z,
             rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
         },
-        inspection_raise = {
-            x = job.pick_x, y = job.pick_y, z = job.inspection_z,
+        -- 不能在任意抓取 XY 直接升到 410：现场部分高位终点逆解无解。
+        -- 先以吸取后的低位 Z 移到已知可达的观察 XY，再在该 XY 垂直上升。
+        inspection_transfer = {
+            x = job.inspection_x, y = job.inspection_y, z = job.lift_z,
             rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
         },
         inspection = {
@@ -821,22 +826,26 @@ local function pick_to_inspection(socket, command_id, job, poses)
     local holding_part = false
     local ok
     local code
+    local phase
 
-    send_status(socket, command_id, "running", {phase = "above_pick"})
+    phase = "above_pick"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movj(poses.pick_approach, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
-    send_status(socket, command_id, "running", {phase = "descend_pick"})
+    phase = "descend_pick"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.pick, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
-    send_status(socket, command_id, "running", {phase = "vacuum_on"})
+    phase = "vacuum_on"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = set_vacuum(true)
     if not ok then
         set_vacuum(false)
         checked_movl(poses.pick_approach, CFG.motion.pick_v)
         go_photo(socket, command_id)
-        return false, code, false
+        return false, code, false, phase
     end
     holding_part = true
     active_hold = {
@@ -849,22 +858,25 @@ local function pick_to_inspection(socket, command_id, job, poses)
         inspection_z = job.inspection_z,
     }
 
-    send_status(socket, command_id, "running", {phase = "lift_pick"})
+    phase = "lift_pick"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
 
-    -- 先在原抓取 XY 竖直升到现场确认可达的观察高度 410，再保持 Z 不变
-    -- 只水平移动到相机位于放置点上方的观察 XY；工件随吸盘横向让开。
-    send_status(socket, command_id, "running", {phase = "raise_inspection"})
-    ok, code = checked_movl(poses.inspection_raise, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
+    -- 先保持吸取后的低位 Z，只移动 XY 到观察位 XY；再在已知可达的
+    -- 观察 XY 垂直升到 410。彻底删除“任意抓取 XY 的 Z=410”终点。
+    phase = "transfer_to_inspection_low"
+    send_status(socket, command_id, "running", {phase = phase})
+    ok, code = checked_movl(poses.inspection_transfer, CFG.motion.travel_v)
+    if not ok then return false, code, holding_part, phase end
 
-    send_status(socket, command_id, "running", {phase = "at_place_inspection"})
+    phase = "raise_at_inspection_xy"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.inspection, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part end
+    if not ok then return false, code, holding_part, phase end
     Wait(CFG.motion.settle_ms)
     active_hold.ready = true
-    return true, "", holding_part
+    return true, "", holding_part, "at_place_inspection"
 end
 
 local function parse_stack_release_job(line)
@@ -1154,7 +1166,9 @@ local function handle_line(socket, line)
         end
 
         send_status(socket, command_id, "accepted", {cmd = command})
-        local ok, code, holding_part = pick_to_inspection(socket, command_id, job, poses)
+        local ok, code, holding_part, failed_phase = pick_to_inspection(
+            socket, command_id, job, poses
+        )
         if ok then
             return cache_and_send_terminal(socket, command_id, command, line, "done", {
                 phase = "at_place_inspection", holding_part = true,
@@ -1171,6 +1185,7 @@ local function handle_line(socket, line)
                 or "task3 pick/inspection failed",
             recoverable = false,
             holding_part = holding_part,
+            phase = failed_phase,
         })
     elseif command == "place_from_inspection" then
         local request_ok, request_error = validate_request_context(line)

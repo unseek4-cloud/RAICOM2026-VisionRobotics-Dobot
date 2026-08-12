@@ -136,6 +136,21 @@ class RuntimeFlowTests(unittest.TestCase):
         # (place_x, place_y, inspection_z) 高位终点。
         self.assertLess(float(fields["retract_z"]), float(fields["inspection_z"]))
 
+    def test_task3_lua_avoids_high_z_at_arbitrary_pick_xy(self) -> None:
+        """第一阶段必须先低位到观察 XY，不能在任意抓取 XY 直接升到 410。"""
+
+        source = (PROJECT_ROOT / "dobotstudio" / "raicom_e6_executor.lua").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "x = job.inspection_x, y = job.inspection_y, z = job.lift_z",
+            source,
+        )
+        self.assertNotIn(
+            "x = job.pick_x, y = job.pick_y, z = job.inspection_z",
+            source,
+        )
+
     def test_go_photo_carries_workspace_contract(self) -> None:
         """拍照命令也必须让 Lua 核对 Python 当前使用的工作空间。"""
 
