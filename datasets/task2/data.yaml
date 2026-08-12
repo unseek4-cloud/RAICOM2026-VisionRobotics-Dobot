@@ -1,0 +1,11 @@
+# 任务二类别只是比赛前的模板，请按现场任务书和实际标注顺序修改。
+path: D:/CAIM/RAICOM-Project/datasets/task2
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: cube_red
+  1: cube_blue
+  2: cylinder_red
+  3: cylinder_blue

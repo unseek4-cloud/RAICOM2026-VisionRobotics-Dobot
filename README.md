@@ -88,6 +88,7 @@ RAICOM-Project/
 │  └─ task3.pt                     # 任务三现场模型
 ├─ src/raicom/                     # 配置、视觉、通信、调度和 UI
 ├─ tools/check_environment.py      # 环境、端口和真机参数自检
+├─ tools/capture_yolo_dataset.py   # D435 RGB 拍照和 train/val/test 一键划分工具
 ├─ tools/train_yolo.py             # 强制使用本地基础权重的任务二/三离线训练入口
 ├─ tests/                           # DVS、标定、仿真视觉、运行时/UI与协议测试
 ├─ logs/                           # 中文运行日志和结果 JSONL
@@ -557,15 +558,44 @@ P_base = T_base_tip × T_tip_camera × P_camera
 - 任务三应把“已知图案”和评分新增差异考虑进数据设计，不能只用一个硬编码类别字符串比较。
 - 所有工件同时出现，训练类别、任务过滤和 ROI 必须共同防止跨任务误抓。
 
-### 10.2 建议目录
+### 10.2 D435 拍照和数据集目录
 
 ```text
 datasets/task2/
+├─ photo                         # D435 拍摄的 1280×720 JPG 原图及待划分同名 TXT 标签
 ├─ images/train
 ├─ images/val
+├─ images/test
 ├─ labels/train
 ├─ labels/val
+├─ labels/test
 └─ data.yaml
+```
+
+任务三使用完全相同的 `datasets/task3/` 结构。启动拍照界面：
+
+```powershell
+python tools/capture_yolo_dataset.py
+```
+
+界面固定使用 D435 的 RGB `1280×720@30 FPS` 彩色流。选择 Task 2 或 Task 3 后，
+按一次空格键（或点击“拍照”）保存一张 `.jpg` 到对应的 `photo` 目录。用 YOLO
+标注工具完成标注后，应把每张图片的同名 `.txt` 标签也放在 `photo` 中，例如
+`task2_001.jpg` 对应 `task2_001.txt`。点击“一键划分当前任务”后，工具按固定随机
+种子把图片和已有标签复制到 `train : val : test = 70% : 20% : 10%`；原始
+`photo` 文件不会删除。少于 10 张图片或缺少标签时界面会要求再次确认。
+
+多台 RealSense 同时连接时，可指定 D435 序列号：
+
+```powershell
+python tools/capture_yolo_dataset.py --serial 你的D435序列号
+```
+
+也可以不启动界面，重新划分指定任务：
+
+```powershell
+python tools/capture_yolo_dataset.py --split-only task2
+python tools/capture_yolo_dataset.py --split-only task3
 ```
 
 `data.yaml` 示例：
@@ -574,6 +604,7 @@ datasets/task2/
 path: D:/CAIM/RAICOM-Project/datasets/task2
 train: images/train
 val: images/val
+test: images/test
 names:
   0: cube_red
   1: cube_blue
@@ -581,21 +612,21 @@ names:
   3: cylinder_blue
 ```
 
-类别只是示例，必须按现场道具重做。项目训练入口强制要求 `--base` 指向已经存在的本地基础权重，不会主动联网下载。比赛前应把例如 `offline_weights/yolo11n.pt` 的完整权重缓存到电脑。
+类别只是示例，必须按现场道具重做。任务三的模板在 `datasets/task3/data.yaml`，默认示例为 `known_pattern` 和 `different_pattern`。项目训练入口强制要求 `--base` 指向已经存在的本地基础权重，不会主动联网下载。比赛前应把完整权重缓存到 `tools/offline_weights/yolo11n.pt`。
 
 任务二最简训练命令：
 
 ```powershell
-python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
 ```
 
 任务三：
 
 ```powershell
-python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
 ```
 
-脚本训练成功后会从 Ultralytics 实际 `save_dir` 找到 `best.pt`，自动复制为 `models/task2.pt` 或 `models/task3.pt`，避免猜测自动编号的训练目录。若程序出现下载行为，说明 `--base` 指向的本地权重不完整，应立即停止并检查离线文件；现场无云端网络，不能依赖下载。
+脚本训练成功后会从 Ultralytics 实际 `save_dir` 找到 `best.pt`，自动复制为 `models/task2.pt` 或 `models/task3.pt`，随后使用 `data.yaml` 的 `test` 集评估最佳权重，指标和图表写入 `runs` 下的测试目录。紧急情况下可加 `--skip-test` 跳过自动测试，但正式模型不建议这样做。若程序出现下载行为，说明 `--base` 指向的本地权重不完整，应立即停止并检查离线文件；现场无云端网络，不能依赖下载。
 
 部署前必须用未参与训练的图像验证误检、漏检、相似图案、旋转、遮挡、反光和颜色变化，不能只确认训练集图片。
 

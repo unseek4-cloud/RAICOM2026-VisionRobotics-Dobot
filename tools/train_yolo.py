@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base",
         type=Path,
         required=True,
-        help="本地基础权重，例如 offline_weights/yolo11n.pt；不会自动下载",
+        help="本地基础权重，例如 tools/offline_weights/yolo11n.pt；不会自动下载",
     )
     parser.add_argument("--epochs", type=int, default=80, help="训练轮数，默认 80")
     parser.add_argument("--imgsz", type=int, default=640, help="训练图像尺寸，默认 640")
@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--name", default=None, help="训练名称；默认 task2_field/task3_field")
     parser.add_argument("--patience", type=int, default=20, help="早停等待轮数")
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="训练后不使用 data.yaml 的 test 集评估（现场应尽量保留自动测试）",
+    )
     return parser
 
 
@@ -100,7 +105,33 @@ def main() -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(best_weight, destination)
     print(f"训练完成，已复制正式模型：{destination}")
-    print("请先运行模拟/离线图片验证，再按 README 做真机低速验证。")
+    if not args.skip_test:
+        print("开始使用 data.yaml 中的 test 集评估最佳权重……")
+        try:
+            test_model = YOLO(str(destination))
+            test_model.val(
+                data=str(data_yaml),
+                split="test",
+                imgsz=args.imgsz,
+                batch=args.batch,
+                device=args.device,
+                workers=args.workers,
+                project=str(project_dir),
+                name=f"{run_name}_test",
+                exist_ok=False,
+                verbose=True,
+                plots=True,
+            )
+        except Exception as exc:
+            print(
+                f"[测试失败] 正式模型已经生成在 {destination}，但 test 集评估失败：{exc}",
+                file=sys.stderr,
+            )
+            return 5
+        print("test 集评估完成；指标和图表已保存到本次测试目录。")
+    else:
+        print("已按 --skip-test 跳过独立测试集评估。")
+    print("请再运行模拟/离线图片验证，然后按 README 做真机低速验证。")
     return 0
 
 

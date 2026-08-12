@@ -101,8 +101,8 @@ python -c "import pyrealsense2 as rs; c=rs.context(); print([(d.get_info(rs.came
 训练命令，`--base` 必须是本地已经存在的离线基础权重：
 
 ```powershell
-python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
-python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
 ```
 
 ### 3.5 EIH 标定文件和坐标变换

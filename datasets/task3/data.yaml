@@ -1,0 +1,10 @@
+# 任务三类别只是比赛前的模板，请按现场图片类别和实际标注顺序修改。
+# 如果采用“已知图案/差异图案”二分类，需同步设置 config/settings.yaml 的 known_label。
+path: D:/CAIM/RAICOM-Project/datasets/task3
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: known_pattern
+  1: different_pattern
