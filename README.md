@@ -312,7 +312,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `detect_timeout_s`：当前任务等待可用检测的上限。
 - `stable_frames/stable_center_tolerance_px`：连续稳定帧判据，防止机械振动或瞬时误检。
 - `empty_confirm_frames`：连续多帧无当前任务目标才允许判断为空。一帧漏检不能结束任务。
-- `task3.placement_vision`：配置放置顶面多帧数、目标 XY 周围的点云取样半径/最少点数、允许的 Z 波动、释放轻压补偿和观察位安全间距。视觉结果无效时保持吸盘并停止，绝不回退到固定高度。
+- `task3.placement_vision`：配置放置顶面多帧数、独立的 `depth_min_mm`、目标 XY 周围的点云取样半径/最少点数、允许的 Z 波动、释放轻压补偿和观察位安全间距。当前观察位为 `Z=410 mm`，堆顶会比抓取目标更靠近相机，因此放置测高下限为 `250 mm`，抓取区仍使用 `camera.depth_min_mm=300 mm`。视觉结果无效时保持吸盘并停止，绝不回退到固定高度。
 
 ### 6.10 `simulation`
 
@@ -406,7 +406,7 @@ Lua 连接成功且本地 `CFG` 校验通过后发送：
 
 - `ping`：Python 在空闲且没有在途命令时自动发送，Lua 返回 `pong`；
 - `go_photo`：回拍照位；
-- `pick_to_inspection`：任务三抓取后保持真空，先升到 `place_inspection_z_mm`，再移动到由 EIH 相机偏移计算出的放置观察位；成功终态为 `phase=at_place_inspection` 和 `holding_part=true`；
+- `pick_to_inspection`：任务三抓取后保持真空，先在原抓取 XY 竖直升到 `place_inspection_z_mm`（当前现场值 `410 mm`），再保持该 Z 不变、只移动 XY 到由 EIH 相机偏移计算出的放置观察位；成功终态为 `phase=at_place_inspection` 和 `holding_part=true`；
 - `place_from_inspection`：携带第一阶段命令 ID 作为 `hold_id`，按 Python 视觉计算的绝对 `place_z` 下放、释放、回撤并回拍照位。Lua 只接受与当前持件事务完全匹配的目标；
 - `stop_after_current`：当前命令执行完成后停止后续任务，不抢断正在执行的运动，不改变当前吸盘输出，也不等同实体急停。如果机械臂正在持件或处于异常保压状态，禁止依靠软件停止命令盲目断真空，必须隔离人员、防止工件坠落，再按现场安全操作流程人工处置。
 

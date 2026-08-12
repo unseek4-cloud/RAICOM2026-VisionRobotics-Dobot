@@ -283,6 +283,7 @@ class Settings:
                 issues.append("robot.motion.place_inspection_z_mm 超出 robot.workspace_mm.z")
 
         placement_numbers = {
+            "tasks.task3.placement_vision.depth_min_mm": (0.0, False),
             "tasks.task3.placement_vision.press_down_mm": (0.0, True),
             "tasks.task3.placement_vision.sample_radius_mm": (0.0, False),
             "tasks.task3.placement_vision.max_surface_spread_mm": (0.0, False),

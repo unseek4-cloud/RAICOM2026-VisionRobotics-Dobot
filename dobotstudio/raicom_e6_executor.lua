@@ -56,7 +56,8 @@ local CFG = {
         approach_mm = 40.0,       -- 抓取点上方的接近距离
         pick_lift_mm = 80.0,      -- 吸取后保持 X/Y 不变的抬升距离
         release_retract_mm = 80.0,-- 释放后保持放置 X/Y 不变的回撤距离
-        place_inspection_z_mm = 430.0, -- 任务三持件识别放置顶面的绝对 Tip Z
+        -- 现场实测 Z=417 已不可达：原抓取 XY 只升至 410，随后保持 Z=410 仅移动 XY。
+        place_inspection_z_mm = 410.0,
         z_up_sign = 1,            -- 标准用户坐标 Z 向上填 1；若现场相反填 -1
         travel_v = 20,            -- 运动速度安全上限比例 (0,100]
         pick_v = 10,              -- 直线接近/离开速度安全上限比例 (0,100]
@@ -852,8 +853,8 @@ local function pick_to_inspection(socket, command_id, job, poses)
     ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
     if not ok then return false, code, holding_part end
 
-    -- 先在原抓取 XY 升到 D435 有效观察高度，再水平移到相机位于放置点
-    -- 上方的观察 XY；工件随吸盘横向让开，不遮挡目标顶面。
+    -- 先在原抓取 XY 竖直升到现场确认可达的观察高度 410，再保持 Z 不变
+    -- 只水平移动到相机位于放置点上方的观察 XY；工件随吸盘横向让开。
     send_status(socket, command_id, "running", {phase = "raise_inspection"})
     ok, code = checked_movl(poses.inspection_raise, CFG.motion.pick_v)
     if not ok then return false, code, holding_part end

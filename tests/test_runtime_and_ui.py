@@ -102,7 +102,7 @@ class RuntimeFlowTests(unittest.TestCase):
             place_y_mm=120.0,
             inspection_x_mm=276.0,
             inspection_y_mm=-3.0,
-            inspection_z_mm=430.0,
+            inspection_z_mm=410.0,
             route_key="match",
         )
 
@@ -114,6 +114,7 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertIs(holding, True)
         self.assertAlmostEqual(float(fields["approach_z"]), 160.0)
         self.assertAlmostEqual(float(fields["lift_z"]), 200.0)
+        self.assertAlmostEqual(float(fields["inspection_z"]), 410.0)
 
         second = bridge.place_from_inspection(target, first.command_id, 149.5)
         self.assertEqual(second.status, "done")

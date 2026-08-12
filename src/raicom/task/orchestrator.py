@@ -528,7 +528,14 @@ class TaskOrchestrator:
         spread_limit = float(self.settings.get(f"{prefix}.max_surface_spread_mm", 4.0))
         radius = float(self.settings.get(f"{prefix}.sample_radius_mm", 8.0))
         min_points = int(self.settings.get(f"{prefix}.min_valid_points", 20))
-        depth_min = float(self.settings.get("camera.depth_min_mm", 300.0))
+        # 观察高度降低后，已叠放工件的顶面会比抓取区目标更靠近相机；
+        # 放置测高使用独立下限，不能误改抓取区的深度安全范围。
+        depth_min = float(
+            self.settings.get(
+                f"{prefix}.depth_min_mm",
+                self.settings.get("camera.depth_min_mm", 300.0),
+            )
+        )
         depth_max = float(self.settings.get("camera.depth_max_mm", 1500.0))
         surfaces: list[tuple[float, float, float]] = []
         depths: list[float] = []

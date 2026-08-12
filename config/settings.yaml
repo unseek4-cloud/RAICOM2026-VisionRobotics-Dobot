@@ -132,8 +132,9 @@ robot:
     approach_mm: 40.0               # 到抓取点正上方后再直线下降
     pick_lift_mm: 80.0              # 吸取后 X/Y 不变，Z 抬高距离
     release_retract_mm: 80.0
-    # 任务三持件识别放置顶面的绝对 Tip Z；须保证 D435 到目标顶面仍在有效量程内。
-    place_inspection_z_mm: 430.0
+    # 任务三持件识别放置顶面的绝对 Tip Z。现场实测 Z=417 已不可达，限制为 410：
+    # 吸取后先在原 XY 竖直升至 410，再保持 Z=410 只移动 XY 到放置观察位。
+    place_inspection_z_mm: 410.0
     travel_speed_percent: 20        # 首次真机建议 5~10，验证后逐步提高
     pick_speed_percent: 10
     acceleration_percent: 20
@@ -202,6 +203,8 @@ tasks:
     stable_center_tolerance_px: 12
     placement_vision:
       temporal_samples: 5          # 到放置观察位后连续识别的深度帧数
+      # Z=410 时后续堆顶会比抓取区更靠近相机；仅放置测高使用 250，抓取仍使用 camera.depth_min_mm=300。
+      depth_min_mm: 250.0
       sample_radius_mm: 8.0        # 在目标机器人 XY 周围取顶面点云的半径
       min_valid_points: 20
       max_surface_spread_mm: 4.0   # 多帧顶面 Z 波动超过此值则保持吸盘并停止
