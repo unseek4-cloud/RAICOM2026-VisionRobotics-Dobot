@@ -150,6 +150,19 @@ class CalibrationModelTests(unittest.TestCase):
         )
         model.validate_workspace(pose[:3])
 
+    def test_real_run_rejects_photo_pose_outside_workspace(self) -> None:
+        base = Settings.load(PROJECT_ROOT / "config" / "settings.yaml")
+        data = copy.deepcopy(base.as_dict())
+        data["robot"]["photo_pose_mm_deg"][0] = 154.0
+        settings = Settings(data, PROJECT_ROOT / "config" / "settings.yaml")
+
+        issues = settings.validate_real_run()
+
+        self.assertTrue(
+            any("robot.photo_pose_mm_deg.x=154" in issue for issue in issues),
+            issues,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

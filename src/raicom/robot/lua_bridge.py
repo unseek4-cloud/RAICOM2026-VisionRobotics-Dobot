@@ -23,6 +23,7 @@ import socket
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -425,6 +426,17 @@ class LuaBridgeServer:
         if not self._finite_sequence(orientation, 3):
             return {}, "robot.motion.orientation_mm_deg 必须填写 3 个有限姿态值"
 
+        workspace = self.settings.get("robot.workspace_mm", None)
+        if not isinstance(workspace, Mapping):
+            return {}, "robot.workspace_mm 必须填写三轴工作空间"
+        workspace_fields: dict[str, float] = {}
+        for axis in ("x", "y", "z"):
+            bounds = workspace.get(axis)
+            if not self._finite_sequence(bounds, 2) or float(bounds[0]) >= float(bounds[1]):
+                return {}, f"robot.workspace_mm.{axis} 必须填写有效的 [最小值, 最大值]"
+            workspace_fields[f"workspace_{axis}_min"] = float(bounds[0])
+            workspace_fields[f"workspace_{axis}_max"] = float(bounds[1])
+
         approach, error = finite_number("robot.motion.approach_mm", positive=True)
         if error:
             return {}, error
@@ -509,6 +521,7 @@ class LuaBridgeServer:
             "tool": tool,
             "photo_pose": tuple(float(value) for value in photo),
             "orientation": tuple(float(value) for value in orientation),
+            **workspace_fields,
             "z_up_sign": int(z_up_sign),
             "approach_mm": float(approach),
             "pick_lift_mm": float(lift),

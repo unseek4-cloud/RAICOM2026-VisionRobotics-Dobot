@@ -259,7 +259,11 @@ class TaskOrchestrator:
 
         reply = self.robot.go_photo()
         if reply.status not in ("done", "home", "ok"):
-            raise TaskError(f"机械臂未能到达固定拍照位：{reply.message or reply.status}")
+            code = str(reply.raw.get("code", "")).strip()
+            reason = reply.message or reply.status
+            if code and code not in reason:
+                reason = f"{code}：{reason}"
+            raise TaskError(f"机械臂未能到达固定拍照位：{reason}")
         self.camera.flush()
 
         expected = int(self.settings.get(f"tasks.{task_name}.expected_objects"))

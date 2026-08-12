@@ -125,6 +125,25 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertAlmostEqual(float(fields["place_z"]), 149.5)
         self.assertAlmostEqual(float(fields["retract_z"]), 229.5)
 
+    def test_go_photo_carries_workspace_contract(self) -> None:
+        """拍照命令也必须让 Lua 核对 Python 当前使用的工作空间。"""
+
+        bridge = _CapturingLuaBridge(self.settings)
+        reply = bridge.go_photo()
+
+        self.assertEqual(reply.status, "done")
+        command, fields, phase, holding = bridge.calls[-1]
+        self.assertEqual(command, "go_photo")
+        self.assertEqual(phase, "at_photo")
+        self.assertIsNone(holding)
+        self.assertAlmostEqual(float(fields["photo_x"]), 160.0)
+        self.assertAlmostEqual(float(fields["workspace_x_min"]), 155.0)
+        self.assertAlmostEqual(float(fields["workspace_x_max"]), 290.0)
+        self.assertAlmostEqual(float(fields["workspace_y_min"]), -150.0)
+        self.assertAlmostEqual(float(fields["workspace_y_max"]), 135.0)
+        self.assertAlmostEqual(float(fields["workspace_z_min"]), 100.0)
+        self.assertAlmostEqual(float(fields["workspace_z_max"]), 435.0)
+
 
 class ChineseGuiSmokeTests(unittest.TestCase):
     def test_window_constructs_offscreen_without_garbled_text(self) -> None:

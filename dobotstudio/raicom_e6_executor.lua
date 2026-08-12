@@ -46,8 +46,8 @@ local CFG = {
 
     -- ★现场必填：按当前用户坐标系低速示教得到的软件工作空间。
     workspace = {
-        x_min = 175.0, x_max = 290.0,
-        y_min = -150.0, y_max = 40.0,
+        x_min = 155.0, x_max = 290.0,
+        y_min = -150.0, y_max = 135.0,
         z_min = 100.0, z_max = 435.0,
     },
 
@@ -286,6 +286,11 @@ local function validate_static_config()
             return false, "workspace " .. axis .. " bounds are invalid"
         end
     end
+    if photo.x < ws.x_min or photo.x > ws.x_max
+        or photo.y < ws.y_min or photo.y > ws.y_max
+        or photo.z < ws.z_min or photo.z > ws.z_max then
+        return false, "photo_pose is outside workspace"
+    end
 
     local motion = CFG.motion
     if not is_finite(motion.approach_mm) or motion.approach_mm <= 0 then
@@ -475,6 +480,18 @@ local function validate_request_context(line)
         photo_rx = photo.rx, photo_ry = photo.ry, photo_rz = photo.rz,
     }
     for key, expected in pairs(photo_fields) do
+        if not almost_equal(json_get_number(line, key), expected) then
+            return false, "CONFIG_MISMATCH_" .. string.upper(key)
+        end
+    end
+
+    local ws = CFG.workspace
+    local workspace_fields = {
+        workspace_x_min = ws.x_min, workspace_x_max = ws.x_max,
+        workspace_y_min = ws.y_min, workspace_y_max = ws.y_max,
+        workspace_z_min = ws.z_min, workspace_z_max = ws.z_max,
+    }
+    for key, expected in pairs(workspace_fields) do
         if not almost_equal(json_get_number(line, key), expected) then
             return false, "CONFIG_MISMATCH_" .. string.upper(key)
         end

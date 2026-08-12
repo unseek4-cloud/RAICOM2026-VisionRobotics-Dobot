@@ -197,6 +197,25 @@ class Settings:
             ):
                 issues.append(f"robot.workspace_mm.{axis} 必须填写有效的 [最小值, 最大值]")
 
+        if (
+            isinstance(photo_pose, list)
+            and len(photo_pose) == 6
+            and all(self._is_number(value) for value in photo_pose)
+            and isinstance(workspace, Mapping)
+        ):
+            for index, axis in enumerate(("x", "y", "z")):
+                bounds = workspace.get(axis)
+                if (
+                    isinstance(bounds, list)
+                    and len(bounds) == 2
+                    and all(self._is_number(value) for value in bounds)
+                    and not float(bounds[0]) <= float(photo_pose[index]) <= float(bounds[1])
+                ):
+                    issues.append(
+                        f"robot.photo_pose_mm_deg.{axis}={float(photo_pose[index]):g} "
+                        f"超出 robot.workspace_mm.{axis}={bounds}"
+                    )
+
         for task_name in ("task2", "task3"):
             points = self.get(f"robot.place_points.{task_name}", {})
             if not isinstance(points, Mapping) or not points:

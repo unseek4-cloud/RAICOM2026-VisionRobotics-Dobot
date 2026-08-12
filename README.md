@@ -465,7 +465,7 @@ E6/V4.5 Lua 脚本按已核对接口使用 `TCPCreate/TCPStart/TCPRead/TCPWrite/
 | `robot.tool_coordinate_index` | `tool_index` | 完全相同 |
 | `robot.photo_pose_mm_deg` | `photo_pose` | 六维完全相同 |
 | `robot.motion.orientation_mm_deg` | `pick_orientation` | 三维完全相同 |
-| `robot.workspace_mm` | `workspace` | Lua 可相同或更保守，不能更宽松 |
+| `robot.workspace_mm` | `workspace` | 六个边界必须完全相同；每条运动命令都会交叉校验 |
 | `z_up_sign/approach_mm/pick_lift_mm/release_retract_mm` | `motion` 同名项 | 必须相同，否则派生 Z 校验失败 |
 | Python 速度/加速度/稳定等待 | `travel_v/pick_v/acceleration/settle_ms` | 速度请求不得高于 Lua 上限，等待值按脚本校验；首次速度均用 5～10% |
 | 吸盘 API、IO、极性、等待、反馈 | `vacuum` | 硬件字段和等待必须匹配 |

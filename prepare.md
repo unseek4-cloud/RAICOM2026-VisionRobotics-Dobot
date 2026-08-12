@@ -302,7 +302,7 @@ D:\CAIM\RAICOM-Project\dobotstudio\raicom_e6_executor.lua
 | `robot.tool_coordinate_index` | `tool_index` | 完全相同 |
 | `robot.photo_pose_mm_deg` | `photo_pose.x/y/z/rx/ry/rz` | 六个值完全相同 |
 | `robot.motion.orientation_mm_deg` | `pick_orientation.rx/ry/rz` | 三个值完全相同 |
-| `robot.workspace_mm` | `workspace` | Lua 可以相同或更保守，不应比 Python 更宽 |
+| `robot.workspace_mm` | `workspace` | 六个边界完全相同；每条运动命令都会交叉校验 |
 | `approach_mm` | `motion.approach_mm` | 完全相同 |
 | `pick_lift_mm` | `motion.pick_lift_mm` | 完全相同 |
 | `release_retract_mm` | `motion.release_retract_mm` | 完全相同 |
