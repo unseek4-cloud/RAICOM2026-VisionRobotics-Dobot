@@ -159,10 +159,10 @@ class Settings:
         table_depth = self.get("calibration.table_depth_mm", None)
         table_robot_z = self.get("calibration.robot_table_touch_z_mm", None)
         if not self._is_number(table_depth) or float(table_depth) <= 0:
-            issues.append("calibration.table_depth_mm 未填写（空台面 D435 深度，mm）")
+            issues.append("calibration.table_depth_mm 未填写（抓取区空台面 D435 深度，mm）")
         if not self._is_number(table_robot_z):
             issues.append(
-                "calibration.robot_table_touch_z_mm 未填写（吸盘刚贴台面时的机器人 Z，mm）"
+                "calibration.robot_table_touch_z_mm 未填写（吸盘刚贴抓取台面时的机器人 Z，mm）"
             )
 
         photo_pose = self.get("robot.photo_pose_mm_deg", None)
@@ -206,11 +206,16 @@ class Settings:
                 if not isinstance(point, Mapping):
                     issues.append(f"放置点 {task_name}.{name} 格式错误")
                     continue
-                values = [point.get(field) for field in ("x_mm", "y_mm", "down_mm")]
+                fields = (
+                    ("x_mm", "y_mm")
+                    if task_name == "task3"
+                    else ("x_mm", "y_mm", "down_mm")
+                )
+                values = [point.get(field) for field in fields]
                 # default 是必须的安全兜底；其他预置颜色点可整组留空，现场用到再填写。
                 if name != "default" and all(value is None for value in values):
                     continue
-                for field, value in zip(("x_mm", "y_mm", "down_mm"), values):
+                for field, value in zip(fields, values):
                     if not self._is_number(value):
                         issues.append(f"放置点 {task_name}.{name}.{field} 未填写")
 
@@ -244,6 +249,41 @@ class Settings:
             value = self.get(key, None)
             if not self._is_number(value) or float(value) <= 0:
                 issues.append(f"{key} 必须填写大于 0 的有限数值")
+
+        inspection_z = self.get("robot.motion.place_inspection_z_mm", None)
+        if not self._is_number(inspection_z):
+            issues.append("robot.motion.place_inspection_z_mm 必须填写任务三视觉观察位 Z")
+        else:
+            z_bounds = workspace.get("z") if isinstance(workspace, Mapping) else None
+            if (
+                isinstance(z_bounds, list)
+                and len(z_bounds) == 2
+                and all(self._is_number(value) for value in z_bounds)
+                and not float(z_bounds[0]) <= float(inspection_z) <= float(z_bounds[1])
+            ):
+                issues.append("robot.motion.place_inspection_z_mm 超出 robot.workspace_mm.z")
+
+        placement_numbers = {
+            "tasks.task3.placement_vision.press_down_mm": (0.0, True),
+            "tasks.task3.placement_vision.sample_radius_mm": (0.0, False),
+            "tasks.task3.placement_vision.max_surface_spread_mm": (0.0, False),
+            "tasks.task3.placement_vision.min_descent_clearance_mm": (0.0, False),
+        }
+        for key, (minimum, allow_equal) in placement_numbers.items():
+            value = self.get(key, None)
+            invalid_bound = self._is_number(value) and (
+                float(value) < minimum if allow_equal else float(value) <= minimum
+            )
+            if not self._is_number(value) or invalid_bound:
+                relation = "不小于" if allow_equal else "大于"
+                issues.append(f"{key} 必须填写{relation} {minimum:g} 的有限数值")
+        for key, minimum in (
+            ("tasks.task3.placement_vision.temporal_samples", 1),
+            ("tasks.task3.placement_vision.min_valid_points", 3),
+        ):
+            value = self.get(key, None)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                issues.append(f"{key} 必须填写不小于 {minimum} 的整数")
 
         for key in (
             "robot.motion.travel_speed_percent",

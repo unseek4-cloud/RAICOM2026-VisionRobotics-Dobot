@@ -12,13 +12,19 @@ from typing import Any
 
 from ..config import Settings
 from ..events import EventBus
-from ..types import PickTarget, RobotReply
+from ..types import PickTarget, RobotReply, StackPlaceTarget
 
 
 class MockRobot:
     """与 :class:`LuaBridgeServer` 相同接口的安全模拟机械臂。"""
 
-    def __init__(self, settings: Settings, bus: EventBus, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        bus: EventBus,
+        logger: logging.Logger,
+        simulation_world: Any | None = None,
+    ) -> None:
         self.settings = settings
         self.bus = bus
         self.log = logger.getChild("robot.mock")
@@ -26,6 +32,8 @@ class MockRobot:
         self._connected = threading.Event()
         self._shutdown = threading.Event()
         self._command_lock = threading.Lock()
+        self.simulation_world = simulation_world
+        self._holding: tuple[str, StackPlaceTarget] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -33,6 +41,9 @@ class MockRobot:
 
     def start(self) -> None:
         self._shutdown.clear()
+        self._holding = None
+        if self.simulation_world is not None:
+            self.simulation_world.cancel_placement_view()
         self._connected.set()
         self.bus.emit("robot_connection", True)
         self.log.info("模拟机械臂已启动")
@@ -40,6 +51,9 @@ class MockRobot:
     def stop(self) -> None:
         self._shutdown.set()
         self._connected.clear()
+        self._holding = None
+        if self.simulation_world is not None:
+            self.simulation_world.cancel_placement_view()
         self.bus.emit("robot_connection", False)
         self.log.info("模拟机械臂已停止")
 
@@ -47,6 +61,8 @@ class MockRobot:
         return self._connected.wait(max(0.0, float(timeout_s)))
 
     def go_photo(self) -> RobotReply:
+        if self._holding is not None:
+            return RobotReply("", "error", "仍吸附任务三工件，禁止直接回拍照位", {"local": True})
         return self._run("go_photo", raw={"phase": "at_photo"})
 
     def pick_and_place(self, target: PickTarget) -> RobotReply:
@@ -81,6 +97,75 @@ class MockRobot:
                 "place": [target.place_x_mm, target.place_y_mm, target.place_down_mm],
             },
         )
+
+    def pick_to_inspection(self, target: StackPlaceTarget) -> RobotReply:
+        if self._holding is not None:
+            return RobotReply("", "error", "模拟吸盘已持有工件", {"local": True})
+        values = (
+            target.pick_x_mm,
+            target.pick_y_mm,
+            target.pick_z_mm,
+            target.object_height_mm,
+            target.place_x_mm,
+            target.place_y_mm,
+            target.inspection_x_mm,
+            target.inspection_y_mm,
+            target.inspection_z_mm,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in values
+        ):
+            return RobotReply("", "error", "模拟动态抓取坐标包含非有限数字", {"local": True})
+        reply = self._run(
+            "pick_to_inspection",
+            raw={
+                "phase": "at_place_inspection",
+                "holding_part": True,
+                "task": target.task,
+                "object_id": target.object_id,
+                "route_key": target.route_key,
+            },
+        )
+        if reply.status == "done":
+            self._holding = (reply.command_id, target)
+            if self.simulation_world is not None:
+                self.simulation_world.begin_placement_inspection(
+                    target.place_x_mm,
+                    target.place_y_mm,
+                    target.inspection_z_mm,
+                    target.object_height_mm,
+                )
+        return reply
+
+    def place_from_inspection(
+        self, target: StackPlaceTarget, hold_id: str, place_z_mm: float
+    ) -> RobotReply:
+        if self._holding is None or self._holding[0] != str(hold_id):
+            return RobotReply("", "error", "模拟动态放置 hold_id 不匹配", {"local": True})
+        if (
+            isinstance(place_z_mm, bool)
+            or not isinstance(place_z_mm, (int, float))
+            or not math.isfinite(float(place_z_mm))
+        ):
+            return RobotReply("", "error", "模拟动态放置 Z 无效", {"local": True})
+        reply = self._run(
+            "place_from_inspection",
+            raw={
+                "phase": "at_photo",
+                "holding_part": False,
+                "hold_id": str(hold_id),
+                "place_z": float(place_z_mm),
+                "route_key": target.route_key,
+            },
+        )
+        if reply.status == "done":
+            if self.simulation_world is not None:
+                self.simulation_world.complete_placement()
+            self._holding = None
+        return reply
 
     def request_stop(self) -> None:
         """记录停止后续任务请求；当前模拟动作仍按真实 Lua 语义执行完。"""

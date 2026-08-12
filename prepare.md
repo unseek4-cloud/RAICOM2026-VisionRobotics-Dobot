@@ -114,8 +114,8 @@ python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base o
 | `calibration.invert_cam_to_tip` | 先填 `false`；至少3个已知点显示矩阵方向相反时才改为 `true` |
 | `calibration.matrix_translation_unit` | 根据现场 YAML 平移向量单位填 `m` 或 `mm`；不能仅根据旧文件猜测 |
 | `calibration.pose_rotation_order` | 当前为 `zyx`，必须通过多点验证确认 |
-| `calibration.table_depth_mm` | 机械臂在固定拍照位，桌面无工件时，工作区的 D435 深度中值 |
-| `calibration.robot_table_touch_z_mm` | 桌面无工件，同一用户/工具坐标系下，吸盘刚贴桌面时的机械臂 TCP Z |
+| `calibration.table_depth_mm` | 机械臂在固定拍照位，抓取区无工件时的 D435 深度中值；只用于计算被抓工件高度 |
+| `calibration.robot_table_touch_z_mm` | 抓取区无工件，同一用户/工具坐标系下，吸盘刚贴抓取台面时的 TCP Z；不用于任务三放置台面 |
 | `calibration.press_down_mm` | 正值表示在计算表面的基础上再向下压；首次保持 `0.0` |
 | `calibration.xy_offset_mm` | 只能修正多点上近似相同的小平移偏差；镜像、旋转或误差随位置变化时禁止用它硬补 |
 | `min_object_height_mm/max_object_height_mm` | 按现场工件最小/最大合理高度填写，用于拒绝桌面误检和异常深度 |
@@ -249,10 +249,12 @@ Test-NetConnection $pythonPcIp -Port 2006
 
 | 字段 | 含义 |
 |---|---|
-| `x_mm/y_mm` | 分类区放置点的机械臂 X/Y |
-| `down_mm` | 机械臂保持吸取后的高位 Z 移到该 X/Y 后，再向下运动的距离 |
+| `x_mm/y_mm` | 分类区放置点的机械臂 X/Y；任务二和任务三都必填 |
+| `down_mm` | 仅任务二使用：保持吸取后的高位 Z 移到目标 XY 后的固定下降距离 |
 
-`down_mm` 是“从当次高位转运 Z 下降多少”，不是绝对放置 Z。每个落料点都有自己的 `down_mm`，没有全局默认下降量。
+任务三不再配置 `down_mm`。机械臂持件到放置点观察位后，通过 EIH 和实时深度点云识别当前台面/堆顶 Z，再按“顶面 Z + 当前工件高度”释放。多个路由使用同一 XY 时，首件放在台面，后续件自动叠到上一件顶面；抓取台面和放置台面不要求同高。
+
+同时现场确认 `robot.motion.place_inspection_z_mm`：既要在软件工作空间内，也要使放置点处于 D435 有效量程。任务三视觉失败时程序会保持吸盘并停止，必须按现场安全流程人工处置，不能填写固定高度兜底。
 
 路由对应关系：
 
@@ -681,9 +683,9 @@ Get-NetTCPConnection -LocalPort 6001,2006 -ErrorAction SilentlyContinue |
 2. `listen_host` 保持 `0.0.0.0`，DVS/Lua 的目标 IP 才填 Python 电脑 IP。
 3. `CaliMatrixData.example.yaml` 不能用于真机。
 4. `CamToTipTransform` 名字不能单独证明矩阵方向，必须多点验证。
-5. `table_depth_mm` 必须在最终拍照位测量。
+5. `table_depth_mm` 必须在最终拍照位、抓取区空台面时测量，不能拿它计算任务三放置高度。
 6. 贴台 Z、拍照位、EIH 和真机运行必须使用同一吸盘 TCP 和坐标系。
-7. `down_mm` 是从当次高位转运 Z 下降的距离，不是绝对放置 Z。
+7. `down_mm` 只属于任务二；任务三使用目标上方实时深度识别得到的绝对释放 Z。
 8. 任务路由键必须与 YOLO 类别/颜色/形状名对应，否则会落到 `default`。
 9. Python 和 Lua 两处速度、坐标系、姿态、吸盘参数必须同步。
 10. 软件停止不是实体急停；运动中异常时不要通过关闭窗口或拔网线处理。

@@ -270,8 +270,8 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `invert_cam_to_tip`：只有多点验证证明矩阵方向相反后才能修改。
 - `matrix_translation_unit`：用户示例矩阵平移量约 `0.02~0.12`，应按米读取并转为毫米；现场文件仍须核对。
 - `pose_rotation_order`：当前约定 `zyx`，必须与 DobotStudio Pro 返回姿态的含义一致。
-- `table_depth_mm`：固定拍照位、空台面时目标工作区的深度参考。
-- `robot_table_touch_z_mm`：桌面无工件、吸盘刚好贴台面时机器人 TCP 的 Z。
+- `table_depth_mm`：固定拍照位、抓取区空台面时的深度参考，只计算工件高度。
+- `robot_table_touch_z_mm`：抓取区无工件、吸盘刚好贴抓取台面时机器人 TCP 的 Z。任务三不会把这个 Z 当作放置台面 Z。
 - `press_down_mm`：在计算出的工件表面基础上向下的补偿。首次验证保持 `0`。
 - `xy_offset_mm`：多点验证后的系统性 XY 补偿；不能用它掩盖旋转、镜像或矩阵方向错误。
 - `min_object_height_mm/max_object_height_mm`：超出合理范围时拒绝运动。
@@ -287,6 +287,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `approach_mm`：抓取点上方的接近高度。
 - `pick_lift_mm`：吸取后保持 XY 不变的抬升距离。
 - `release_retract_mm`：释放后的回撤高度。
+- `place_inspection_z_mm`：任务三持件观察放置台面/堆顶时的绝对 Tip Z；必须让目标处在 D435 有效量程内，并与 Lua `CFG.motion` 保持一致。
 - `travel_speed_percent/pick_speed_percent/acceleration_percent`：首次真机建议降至 `5~10%`，确认后逐步提高。
 - `settle_ms`：运动到拍照位后的机械稳定等待。
 - `vacuum.api`：必须现场确认填 `ToolDO` 或 `DO`。用户参考脚本中的 `SetIODO` 不适用于本项目核对过的 E6/V4.5 Lua 接口，禁止照抄。
@@ -298,7 +299,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `lua.pc_server_ip`：运行 Python 的电脑有线网卡 IPv4，不是机器人控制器 IP。
 - `lua.pc_server_port`：必须与 `network.robot_bridge.port` 一致。
 - `lua.reconnect_delay_ms`：Lua 断线后再次尝试连接 Python 的等待时间；重连只恢复通信，不自动重做不确定的运动。
-- `place_points`：按任务和路由键配置分类点。每个实际会命中的路由都必须分别实测填写 `x_mm/y_mm/down_mm`；`down_mm` 是该落料点从转运高度向下的距离，不存在全局默认下降量或隐式回退值。任务二预置 `default/red/blue/green/yellow`，任务三预置 `default/match/not_match`。这些只是方便配置的键名，现场颜色/类别不同就应修改路由，不能把预置颜色当赛题固定颜色。除完全不用的可选键外，实际会命中的点必须通过示教填写。
+- `place_points`：按任务和路由键配置分类点。任务二填写 `x_mm/y_mm/down_mm`，仍按固定下降量放置；任务三只填写 `x_mm/y_mm`，每件都会到目标上方重新识别当前顶面，再计算绝对释放 Z。任务三预置 `default/match/not_match`，把多个路由配置到相同 XY 即可自动逐件叠放。
 
 真机还必须打开 `dobotstudio/raicom_e6_executor.lua`，把 Lua 顶部 `CFG` 中的 PC IP/端口、用户坐标系、工具坐标系、拍照位、抓取姿态、工作空间、Z 正方向、速度/加速度、吸盘 API/通道/极性/等待和可选反馈，逐项填写成与 `settings.yaml` 一致。Python 会把这些安全关键参数显式带入命令，Lua 再与本地 `CFG` 比较；任一不一致都应拒绝运动。两处重复配置是安全复核，不是任选一处填写。
 
@@ -311,10 +312,11 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 - `detect_timeout_s`：当前任务等待可用检测的上限。
 - `stable_frames/stable_center_tolerance_px`：连续稳定帧判据，防止机械振动或瞬时误检。
 - `empty_confirm_frames`：连续多帧无当前任务目标才允许判断为空。一帧漏检不能结束任务。
+- `task3.placement_vision`：配置放置顶面多帧数、目标 XY 周围的点云取样半径/最少点数、允许的 Z 波动、释放轻压补偿和观察位安全间距。视觉结果无效时保持吸盘并停止，绝不回退到固定高度。
 
 ### 6.10 `simulation`
 
-只用于演示和自动测试。`command_delay_s` 只模拟机器人应答延迟；模拟桌面深度、贴台 Z、命令延迟和 `simulation.place_points` 都不能复制到真实设备。模拟落点与 `robot.place_points` 分开，确保真机配置仍保持安全的 `null` 占位。
+只用于演示和自动测试。`place_base_robot_z_mm` 故意与抓取台面不同，用来验证任务三没有复用抓取台面高度；模拟参数不能复制到真实设备。
 
 ## 7. Dobot Vision Studio 任务一 TCP 配置
 
@@ -382,7 +384,7 @@ Lua 连接成功且本地 `CFG` 校验通过后发送：
 {"v":1,"id":"HELLO","status":"ready","phase":"idle","model":"Dobot-E6"}
 ```
 
-抓放命令的实际网络帧示例（必须压成一行；下列数值只是展示字段，不能复制到真机）：
+任务二抓放命令的实际网络帧示例（必须压成一行；下列数值只是展示字段，不能复制到真机）：
 
 ```json
 {"v":1,"id":"PICK-example","cmd":"pick_place","task":"task2","object_id":"task2-001","route_key":"red","pick_x":120.2,"pick_y":-85.4,"pick_z":132.0,"pick_rx":180.0,"pick_ry":0.0,"pick_rz":0.0,"place_x":250.0,"place_y":120.0,"place_down_mm":80.0,"place_z":132.0,"place_rx":180.0,"place_ry":0.0,"place_rz":0.0,"approach_z":172.0,"transfer_z":212.0,"retract_z":212.0,"photo_x":250.0,"photo_y":0.0,"photo_z":350.0,"photo_rx":180.0,"photo_ry":0.0,"photo_rz":0.0,"user":0,"tool":1,"travel_v":10,"pick_v":5,"accel":10,"settle_ms":300,"vacuum_api":"ToolDO","vacuum_io":1,"vacuum_on_level":1,"vacuum_off_level":0,"vacuum_suction_wait_ms":700,"vacuum_release_wait_ms":400,"vacuum_feedback_enabled":false,"vacuum_feedback_di":null,"vacuum_feedback_level":1,"vacuum_feedback_timeout_ms":1500}
@@ -404,15 +406,17 @@ Lua 连接成功且本地 `CFG` 校验通过后发送：
 
 - `ping`：Python 在空闲且没有在途命令时自动发送，Lua 返回 `pong`；
 - `go_photo`：回拍照位；
+- `pick_to_inspection`：任务三抓取后保持真空，先升到 `place_inspection_z_mm`，再移动到由 EIH 相机偏移计算出的放置观察位；成功终态为 `phase=at_place_inspection` 和 `holding_part=true`；
+- `place_from_inspection`：携带第一阶段命令 ID 作为 `hold_id`，按 Python 视觉计算的绝对 `place_z` 下放、释放、回撤并回拍照位。Lua 只接受与当前持件事务完全匹配的目标；
 - `stop_after_current`：当前命令执行完成后停止后续任务，不抢断正在执行的运动，不改变当前吸盘输出，也不等同实体急停。如果机械臂正在持件或处于异常保压状态，禁止依靠软件停止命令盲目断真空，必须隔离人员、防止工件坠落，再按现场安全操作流程人工处置。
 
-`go_photo` 除公共字段外携带 `user/tool/travel_v/pick_v/accel/settle_ms`、全部吸盘复核字段和 `photo_x/y/z/rx/ry/rz`。`pick_place` 在此基础上增加任务元数据、抓取/放置六维位姿、`place_down_mm` 及 `approach_z/transfer_z/retract_z`。协议没有 `suction_off`、`go_home` 或软件 `emergency` 命令；真正紧急情况必须使用实体急停。
+`go_photo` 除公共字段外携带坐标系、运动、吸盘复核和拍照位字段。任务二 `pick_place` 继续携带 `place_down_mm`；任务三由 `pick_to_inspection` 与 `place_from_inspection` 两条幂等命令组成。两阶段之间 Lua 锁定持件状态，只允许匹配的第二阶段命令；深度失败时不会自行关闭真空。协议没有软件 `emergency` 命令，真正紧急情况必须使用实体急停。
 
 Lua 对同一 `id` 返回：
 
 - `accepted`：格式、状态和边界初步校验通过；
 - `running`：执行中，带 `phase`；
-- `done`：完成释放、回拍照位，并通过脚本的运动完成等待后才发送；
+- `done`：命令目标阶段已完成；任务二/任务三第二阶段为 `at_photo`，任务三第一阶段为持件的 `at_place_inspection`；
 - `error`：带 `code`、`message`、`recoverable`；
 - `pong`：`ping` 的诊断响应；
 - `config_error`：Lua 启动时本地 `CFG` 未填写完整，不能运动。
@@ -420,8 +424,19 @@ Lua 对同一 `id` 返回：
 典型阶段为：
 
 ```text
+任务二：
 above_pick → descend_pick → vacuum_on → lift_pick → transfer_xy →
 descend_place → vacuum_off → retract_place → return_photo → done(at_photo)
+
+任务三第一阶段：
+above_pick → descend_pick → vacuum_on → lift_pick → raise_inspection →
+at_place_inspection → done(at_place_inspection, holding_part=true)
+
+Python 多帧识别当前台面/堆顶 Z
+
+任务三第二阶段：
+transfer_to_place → descend_place_visual_z → vacuum_off → retract_place →
+return_photo → done(at_photo, holding_part=false)
 ```
 
 Python 必须等待 `done` 才能拍下一帧或发送下一件。Lua 默认在内存保留最近 32 个终态 ID：同一 ID 和完全相同报文只重放终态，不重复运动；同一 ID 搭配不同报文返回冲突错误。控制器或 Lua 工程重启会清空该缓存，因此重启后的未决命令必须人工复核，不能视为仍具备幂等保护。
@@ -481,7 +496,18 @@ Lua 独有的 `keep_on_after_pick_error` 控制“抓起后发生运动异常时
 
 如果台面有明显倾斜，单个 `table_depth_mm` 不够，应采集空台参考深度图或拟合台面平面，使用目标像素处的 `D_table(u,v)-D_top(u,v)`。
 
-### 9.2 现场 EIH 文件
+### 9.2 任务三动态叠放 Z
+
+任务三到放置观察位后，不使用抓取台面的 `table_depth_mm` 或 `robot_table_touch_z_mm`。程序把当前深度点云通过“当前 Tip 姿态 × EIH Camera→Tip”直接变换到机器人坐标系，在目标 `place_x/y` 周围取当前顶面的多帧中值：
+
+```text
+首件释放Z = 放置台面实时Z + 当前工件高度 - 放置轻压补偿
+后续释放Z = 上一件顶面实时Z + 当前工件高度 - 放置轻压补偿
+```
+
+因此抓取台面和放置台面可以处于不同深度；多件使用同一放置 XY 时会自然叠放。观察时吸盘/工件按 EIH 相机偏移横向让开，避免遮挡目标顶面。深度点不足、多帧波动超限、释放 Z 越界或安全间距不足时，机械臂在观察位继续保持真空并报告失败。
+
+### 9.3 现场 EIH 文件
 
 使用 `opencvCalibration.exe` 重新完成 Eye-In-Hand 标定后，把最终 YAML 复制为：
 
@@ -751,13 +777,14 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 - [ ] D435 序列号、分辨率、帧率、深度尺度和曝光；
 - [ ] 现场 EIH YAML 路径、矩阵节点、方向、平移单位和姿态顺序；
 - [ ] 固定拍照位 `[X,Y,Z,Rx,Ry,Rz]`；
-- [ ] 空台面目标区域深度 `table_depth_mm`；
-- [ ] 吸盘刚贴台面时机器人 `robot_table_touch_z_mm`；
+- [ ] 抓取区空台面深度 `table_depth_mm`；
+- [ ] 吸盘刚贴抓取台面时机器人 `robot_table_touch_z_mm`；
 - [ ] 已知高度量块的 Z 公式验证结果；
-- [ ] 抓取姿态、接近高度、抬升距离、下放距离、释放回撤；
+- [ ] 抓取姿态、接近高度、抬升距离、任务三观察 Z、释放回撤；
 - [ ] X/Y/Z 软件工作空间和控制器安全限制；
 - [ ] 吸盘 `ToolDO/DO` 选择、IO 通道、开启/关闭极性、建立真空时间和可选压力开关反馈；
-- [ ] 任务二/三分类点 `x_mm/y_mm/down_mm`；
+- [ ] 任务二分类点 `x_mm/y_mm/down_mm`，任务三分类点 `x_mm/y_mm`；
+- [ ] 任务三首件放台、第二件叠放的低速实测，以及视觉失败时保持吸盘的验证；
 - [ ] 速度、加速度、到位等待和单命令超时；
 - [ ] YOLO 权重、类别映射、置信度、NMS 和任务过滤；
 - [ ] 深度 ROI、无效深度判据、合理高度范围；

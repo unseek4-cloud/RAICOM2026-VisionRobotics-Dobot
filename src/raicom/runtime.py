@@ -183,7 +183,12 @@ class SystemRuntime:
                 self.settings, self.simulation_world, self.log.getChild("camera.mock")
             )
             self.dvs = MockDVSReceiver(self.settings, self.bus, self.log.getChild("dvs.mock"))
-            self.robot = MockRobot(self.settings, self.bus, self.log.getChild("robot.mock"))
+            self.robot = MockRobot(
+                self.settings,
+                self.bus,
+                self.log.getChild("robot.mock"),
+                self.simulation_world,
+            )
             self.detectors = {
                 "task2": MockDetector(
                     self.settings,

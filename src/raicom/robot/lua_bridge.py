@@ -28,7 +28,7 @@ from typing import Any
 
 from ..config import Settings
 from ..events import EventBus
-from ..types import PickTarget, RobotReply
+from ..types import PickTarget, RobotReply, StackPlaceTarget
 
 
 PROTOCOL_VERSION = 1
@@ -150,6 +150,7 @@ class LuaBridgeServer:
         context.pop("approach_mm")
         context.pop("pick_lift_mm")
         context.pop("release_retract_mm")
+        context.pop("place_inspection_z_mm")
         fields = {
             **context,
             "photo_x": photo[0],
@@ -159,7 +160,9 @@ class LuaBridgeServer:
             "photo_ry": photo[4],
             "photo_rz": photo[5],
         }
-        return self._execute_command("go_photo", fields, require_at_photo=True)
+        return self._execute_command(
+            "go_photo", fields, required_phase="at_photo", required_holding=None
+        )
 
     def pick_and_place(self, target: PickTarget) -> RobotReply:
         """发送一次抓取、放置并回拍照位任务。"""
@@ -187,6 +190,7 @@ class LuaBridgeServer:
         approach_mm = context.pop("approach_mm")
         pick_lift_mm = context.pop("pick_lift_mm")
         release_retract_mm = context.pop("release_retract_mm")
+        context.pop("place_inspection_z_mm")
 
         pick_z = float(target.pick_z_mm)
         approach_z = pick_z + z_up_sign * approach_mm
@@ -222,7 +226,145 @@ class LuaBridgeServer:
             "photo_ry": photo[4],
             "photo_rz": photo[5],
         }
-        return self._execute_command("pick_place", payload, require_at_photo=True)
+        return self._execute_command(
+            "pick_place", payload, required_phase="at_photo", required_holding=None
+        )
+
+    def pick_to_inspection(self, target: StackPlaceTarget) -> RobotReply:
+        """任务三第一阶段：抓取后保持真空，移动到目标高度观察位。"""
+
+        numeric = {
+            "pick_x": target.pick_x_mm,
+            "pick_y": target.pick_y_mm,
+            "pick_z": target.pick_z_mm,
+            "object_height_mm": target.object_height_mm,
+            "place_x": target.place_x_mm,
+            "place_y": target.place_y_mm,
+            "inspection_x": target.inspection_x_mm,
+            "inspection_y": target.inspection_y_mm,
+            "inspection_z": target.inspection_z_mm,
+        }
+        error = self._validate_numeric_fields(numeric)
+        if error:
+            return self._local_error("", error)
+
+        context, error = self._runtime_context()
+        if error:
+            return self._local_error(self._new_command_id("CONFIG"), error)
+        photo = context.pop("photo_pose")
+        orientation = context.pop("orientation")
+        z_up_sign = context.pop("z_up_sign")
+        approach_mm = context.pop("approach_mm")
+        pick_lift_mm = context.pop("pick_lift_mm")
+        context.pop("release_retract_mm")
+        configured_inspection_z = context.pop("place_inspection_z_mm")
+        if not math.isclose(
+            float(target.inspection_z_mm), configured_inspection_z, abs_tol=1e-4
+        ):
+            return self._local_error("", "任务三观察 Z 与 robot.motion.place_inspection_z_mm 不一致")
+
+        pick_z = float(target.pick_z_mm)
+        approach_z = pick_z + z_up_sign * approach_mm
+        lift_z = pick_z + z_up_sign * pick_lift_mm
+        payload: dict[str, Any] = {
+            **{key: float(value) for key, value in numeric.items()},
+            **context,
+            "task": str(target.task),
+            "object_id": str(target.object_id),
+            "route_key": str(target.route_key),
+            "pick_rx": orientation[0],
+            "pick_ry": orientation[1],
+            "pick_rz": orientation[2],
+            "inspection_rx": orientation[0],
+            "inspection_ry": orientation[1],
+            "inspection_rz": orientation[2],
+            "approach_z": approach_z,
+            "lift_z": lift_z,
+            "photo_x": photo[0],
+            "photo_y": photo[1],
+            "photo_z": photo[2],
+            "photo_rx": photo[3],
+            "photo_ry": photo[4],
+            "photo_rz": photo[5],
+        }
+        return self._execute_command(
+            "pick_to_inspection",
+            payload,
+            required_phase="at_place_inspection",
+            required_holding=True,
+        )
+
+    def place_from_inspection(
+        self, target: StackPlaceTarget, hold_id: str, place_z_mm: float
+    ) -> RobotReply:
+        """任务三第二阶段：按视觉求得的绝对 Z 放置、释放并回拍照位。"""
+
+        numeric = {
+            "place_x": target.place_x_mm,
+            "place_y": target.place_y_mm,
+            "place_z": place_z_mm,
+            "inspection_x": target.inspection_x_mm,
+            "inspection_y": target.inspection_y_mm,
+            "inspection_z": target.inspection_z_mm,
+        }
+        error = self._validate_numeric_fields(numeric)
+        if error:
+            return self._local_error("", error)
+        if not hold_id:
+            return self._local_error("", "任务三动态放置缺少 hold_id")
+
+        context, error = self._runtime_context()
+        if error:
+            return self._local_error(self._new_command_id("CONFIG"), error)
+        photo = context.pop("photo_pose")
+        orientation = context.pop("orientation")
+        z_up_sign = context.pop("z_up_sign")
+        context.pop("approach_mm")
+        context.pop("pick_lift_mm")
+        release_retract_mm = context.pop("release_retract_mm")
+        configured_inspection_z = context.pop("place_inspection_z_mm")
+        if not math.isclose(
+            float(target.inspection_z_mm), configured_inspection_z, abs_tol=1e-4
+        ):
+            return self._local_error("", "任务三观察 Z 与 robot.motion.place_inspection_z_mm 不一致")
+
+        retract_z = float(place_z_mm) + z_up_sign * release_retract_mm
+        payload: dict[str, Any] = {
+            **{key: float(value) for key, value in numeric.items()},
+            **context,
+            "task": str(target.task),
+            "object_id": str(target.object_id),
+            "route_key": str(target.route_key),
+            "hold_id": str(hold_id),
+            "place_rx": orientation[0],
+            "place_ry": orientation[1],
+            "place_rz": orientation[2],
+            "inspection_rx": orientation[0],
+            "inspection_ry": orientation[1],
+            "inspection_rz": orientation[2],
+            "retract_z": retract_z,
+            "photo_x": photo[0],
+            "photo_y": photo[1],
+            "photo_z": photo[2],
+            "photo_rx": photo[3],
+            "photo_ry": photo[4],
+            "photo_rz": photo[5],
+        }
+        return self._execute_command(
+            "place_from_inspection",
+            payload,
+            required_phase="at_photo",
+            required_holding=False,
+        )
+
+    @staticmethod
+    def _validate_numeric_fields(fields: dict[str, Any]) -> str:
+        for name, value in fields.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"坐标字段 {name} 不是数字"
+            if not math.isfinite(float(value)):
+                return f"坐标字段 {name} 为 NaN/Inf"
+        return ""
 
     def request_stop(self) -> None:
         """尽力通知 Lua 停止后续任务。
@@ -292,6 +434,9 @@ class LuaBridgeServer:
         release_retract, error = finite_number(
             "robot.motion.release_retract_mm", positive=True
         )
+        if error:
+            return {}, error
+        place_inspection_z, error = finite_number("robot.motion.place_inspection_z_mm")
         if error:
             return {}, error
         travel_v, error = finite_number("robot.motion.travel_speed_percent", positive=True)
@@ -368,6 +513,7 @@ class LuaBridgeServer:
             "approach_mm": float(approach),
             "pick_lift_mm": float(lift),
             "release_retract_mm": float(release_retract),
+            "place_inspection_z_mm": float(place_inspection_z),
             "travel_v": float(travel_v),
             "pick_v": float(pick_v),
             "accel": float(acceleration),
@@ -402,7 +548,8 @@ class LuaBridgeServer:
         command: str,
         fields: dict[str, Any],
         *,
-        require_at_photo: bool,
+        required_phase: str | None,
+        required_holding: bool | None,
     ) -> RobotReply:
         if self._shutdown.is_set():
             return self._local_error("", "Lua 桥接服务未运行", status="stopped")
@@ -483,11 +630,18 @@ class LuaBridgeServer:
                 )
 
             status = str(terminal.get("status", "error"))
-            if status == "done" and require_at_photo:
-                if terminal.get("phase") != "at_photo":
+            if status == "done" and required_phase is not None:
+                if terminal.get("phase") != required_phase:
                     return self._local_error(
                         command_id,
-                        "Lua 返回 done，但未确认机械臂已回到拍照位",
+                        f"Lua 返回 done，但未确认阶段 {required_phase}",
+                        raw=terminal,
+                    )
+            if status == "done" and required_holding is not None:
+                if terminal.get("holding_part") is not required_holding:
+                    return self._local_error(
+                        command_id,
+                        "Lua 返回 done，但持件状态与命令目标不一致",
                         raw=terminal,
                     )
             message = str(terminal.get("message", terminal.get("code", "")))

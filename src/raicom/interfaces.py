@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from .types import Detection, PickTarget, RobotReply
+from .types import Detection, PickTarget, RobotReply, StackPlaceTarget
 
 
 class CameraLike(Protocol):
@@ -26,6 +26,25 @@ class CalibrationLike(Protocol):
     def locate(self, pixel: tuple[int, int], depth_mm: float, intrinsics: Any) -> tuple[
         tuple[float, float, float], tuple[float, float, float]
     ]: ...
+    def object_height_mm(self, depth_mm: float) -> float: ...
+    def placement_inspection_pose(
+        self,
+        place_xy_mm: tuple[float, float],
+        inspection_z_mm: float,
+        orientation_deg: tuple[float, float, float],
+    ) -> tuple[float, float, float, float, float, float]: ...
+    def locate_surface_at_robot_xy(
+        self,
+        bundle: Any,
+        target_xy_mm: tuple[float, float],
+        tip_pose_mm_deg: tuple[float, float, float, float, float, float],
+        *,
+        depth_min_mm: float,
+        depth_max_mm: float,
+        radius_mm: float,
+        min_points: int,
+    ) -> tuple[tuple[float, float, float], float, int]: ...
+    def validate_workspace(self, robot_xyz_mm: tuple[float, float, float]) -> None: ...
 
 
 class DVSLike(Protocol):
@@ -46,4 +65,8 @@ class RobotLike(Protocol):
     def wait_connected(self, timeout_s: float) -> bool: ...
     def go_photo(self) -> RobotReply: ...
     def pick_and_place(self, target: PickTarget) -> RobotReply: ...
+    def pick_to_inspection(self, target: StackPlaceTarget) -> RobotReply: ...
+    def place_from_inspection(
+        self, target: StackPlaceTarget, hold_id: str, place_z_mm: float
+    ) -> RobotReply: ...
     def request_stop(self) -> None: ...

@@ -23,7 +23,7 @@ from ..config import Settings, SettingsError
 from ..events import EventBus
 from ..interfaces import CalibrationLike, CameraLike, DVSLike, DetectorLike, RobotLike
 from ..result_store import ResultStore
-from ..types import Detection, PickTarget, TaskState
+from ..types import Detection, PickTarget, StackPlaceTarget, TaskState
 
 
 class TaskError(RuntimeError):
@@ -304,21 +304,12 @@ class TaskOrchestrator:
             det.camera_xyz_mm = tuple(float(v) for v in camera_xyz)
             det.robot_xyz_mm = tuple(float(v) for v in robot_xyz)
             route_key, place = self._resolve_place(task_name, det)
+            object_height_mm = self.calibration.object_height_mm(depth_mm)
+            det.extra["object_height_mm"] = object_height_mm
             det.route_key = route_key
             det.status = "等待机械臂"
             self._emit_detection_row(det)
 
-            target = PickTarget(
-                task=task_name,
-                object_id=det.object_id,
-                pick_x_mm=float(robot_xyz[0]),
-                pick_y_mm=float(robot_xyz[1]),
-                pick_z_mm=float(robot_xyz[2]),
-                place_x_mm=float(place["x_mm"]),
-                place_y_mm=float(place["y_mm"]),
-                place_down_mm=float(place["down_mm"]),
-                route_key=route_key,
-            )
             self.log.info(
                 "%s 抓取目标 %s：像素=%s 深度=%.2fmm 机器人=(%.2f,%.2f,%.2f) → %s",
                 task_name,
@@ -330,11 +321,37 @@ class TaskOrchestrator:
             )
 
             self._check_continue()
-            action_reply = self.robot.pick_and_place(target)
-            if action_reply.status not in ("done", "home", "ok"):
-                raise TaskError(
-                    f"机器人抓放失败（{action_reply.status}）：{action_reply.message}"
+            if task_name == "task3":
+                target, action_reply, target_result = self._execute_task3_dynamic_place(
+                    det,
+                    robot_xyz,
+                    place,
+                    route_key,
+                    object_height_mm,
                 )
+            else:
+                target = PickTarget(
+                    task=task_name,
+                    object_id=det.object_id,
+                    pick_x_mm=float(robot_xyz[0]),
+                    pick_y_mm=float(robot_xyz[1]),
+                    pick_z_mm=float(robot_xyz[2]),
+                    place_x_mm=float(place["x_mm"]),
+                    place_y_mm=float(place["y_mm"]),
+                    place_down_mm=float(place["down_mm"]),
+                    route_key=route_key,
+                )
+                action_reply = self.robot.pick_and_place(target)
+                if action_reply.status not in ("done", "home", "ok"):
+                    raise TaskError(
+                        f"机器人抓放失败（{action_reply.status}）：{action_reply.message}"
+                    )
+                target_result = {
+                    "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
+                    "place_xy": [target.place_x_mm, target.place_y_mm],
+                    "place_down_mm": target.place_down_mm,
+                    "route": route_key,
+                }
 
             completed += 1
             det.status = "抓放完成并回拍照位"
@@ -345,12 +362,7 @@ class TaskOrchestrator:
                     "task": task_name,
                     "index": completed,
                     "detection": det.to_dict(),
-                    "target": {
-                        "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
-                        "place_xy": [target.place_x_mm, target.place_y_mm],
-                        "place_down_mm": target.place_down_mm,
-                        "route": route_key,
-                    },
+                    "target": target_result,
                     "robot_reply": action_reply.raw,
                 },
             )
@@ -361,6 +373,208 @@ class TaskOrchestrator:
         if completed != expected:
             raise TaskError(f"{task_name} 完成 {completed} 件，现场预期为 {expected} 件")
         self.log.info("%s 完成，共 %d 件", task_name, completed)
+
+    def _execute_task3_dynamic_place(
+        self,
+        det: Detection,
+        robot_xyz: tuple[float, float, float],
+        place: Mapping[str, Any],
+        route_key: str,
+        object_height_mm: float,
+    ) -> tuple[StackPlaceTarget, Any, dict[str, Any]]:
+        """任务三先持件观察目标顶面，再按绝对 Z 叠放。"""
+
+        inspection_z = float(self.settings.get("robot.motion.place_inspection_z_mm"))
+        orientation_raw = self.settings.get("robot.motion.orientation_mm_deg")
+        if not isinstance(orientation_raw, (list, tuple)) or len(orientation_raw) != 3:
+            raise TaskError("robot.motion.orientation_mm_deg 必须包含 3 个姿态值")
+        orientation = tuple(float(value) for value in orientation_raw)
+        place_xy = (float(place["x_mm"]), float(place["y_mm"]))
+        try:
+            inspection_pose = self.calibration.placement_inspection_pose(
+                place_xy, inspection_z, orientation
+            )
+        except Exception as exc:
+            raise TaskError(f"任务三放置观察位计算失败，拒绝运动：{exc}") from exc
+
+        target = StackPlaceTarget(
+            task="task3",
+            object_id=det.object_id,
+            pick_x_mm=float(robot_xyz[0]),
+            pick_y_mm=float(robot_xyz[1]),
+            pick_z_mm=float(robot_xyz[2]),
+            object_height_mm=float(object_height_mm),
+            place_x_mm=place_xy[0],
+            place_y_mm=place_xy[1],
+            inspection_x_mm=float(inspection_pose[0]),
+            inspection_y_mm=float(inspection_pose[1]),
+            inspection_z_mm=float(inspection_pose[2]),
+            route_key=route_key,
+        )
+
+        det.status = "已抓取，前往放置点上方识别当前顶面"
+        self._emit_detection_row(det)
+        inspect_reply = self.robot.pick_to_inspection(target)
+        if inspect_reply.status not in ("done", "ok"):
+            raise TaskError(
+                f"任务三未能持件到达放置观察位（{inspect_reply.status}）："
+                f"{inspect_reply.message}"
+            )
+
+        # 此后若视觉失败，Lua 会保持真空和观察位，不擅自猜高度或释放工件。
+        self.camera.flush()
+        det.status = "吸盘保持中，正在识别放置点顶面高度"
+        self._emit_detection_row(det)
+        try:
+            surface_xyz, surface_depth_mm, valid_points = self._measure_place_surface(
+                target, inspection_pose
+            )
+        except Exception as exc:
+            raise TaskError(
+                "任务三放置顶面高度识别失败；机械臂仍在观察位保持吸盘，"
+                f"禁止自动释放：{exc}"
+            ) from exc
+
+        z_up_sign = int(self.settings.get("robot.motion.z_up_sign", 1))
+        press_down = float(
+            self.settings.get("tasks.task3.placement_vision.press_down_mm", 0.0)
+        )
+        if (
+            not math.isfinite(press_down)
+            or press_down < 0
+            or press_down >= object_height_mm
+        ):
+            raise TaskError(
+                f"任务三放置下压补偿 {press_down!r} 必须不小于 0 且小于"
+                f"当前工件高度 {object_height_mm:.2f} mm；机械臂仍保持吸盘"
+            )
+        place_z = float(surface_xyz[2]) + z_up_sign * (
+            float(object_height_mm) - press_down
+        )
+        try:
+            self.calibration.validate_workspace((place_xy[0], place_xy[1], place_z))
+        except Exception as exc:
+            raise TaskError(
+                "任务三视觉计算的释放 Z 超出工作空间；机械臂仍保持吸盘："
+                f"{exc}"
+            ) from exc
+
+        descent = z_up_sign * (target.inspection_z_mm - place_z)
+        minimum_descent = float(
+            self.settings.get(
+                "tasks.task3.placement_vision.min_descent_clearance_mm", 20.0
+            )
+        )
+        if not math.isfinite(descent) or descent < minimum_descent:
+            raise TaskError(
+                f"任务三观察位到释放位仅有 {descent:.2f} mm 安全间距，"
+                f"小于 {minimum_descent:.2f} mm；机械臂仍保持吸盘"
+            )
+
+        det.extra.update(
+            {
+                "place_surface_xyz_mm": surface_xyz,
+                "place_surface_depth_mm": surface_depth_mm,
+                "place_surface_valid_points": valid_points,
+                "place_release_z_mm": place_z,
+            }
+        )
+        self.log.info(
+            "task3 放置顶面：机器人=(%.2f,%.2f,%.2f)，深度=%.2fmm，"
+            "工件高=%.2fmm，释放Z=%.2fmm，有效点=%d",
+            *surface_xyz,
+            surface_depth_mm,
+            object_height_mm,
+            place_z,
+            valid_points,
+        )
+        det.status = "顶面高度已识别，按视觉 Z 下放"
+        self._emit_detection_row(det)
+        self._check_continue()
+        action_reply = self.robot.place_from_inspection(
+            target, inspect_reply.command_id, place_z
+        )
+        if action_reply.status not in ("done", "home", "ok"):
+            raise TaskError(
+                f"任务三动态放置失败（{action_reply.status}）：{action_reply.message}"
+            )
+
+        return target, action_reply, {
+            "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
+            "object_height_mm": object_height_mm,
+            "place_xy": [target.place_x_mm, target.place_y_mm],
+            "inspection_pose": list(inspection_pose),
+            "surface_xyz": list(surface_xyz),
+            "surface_depth_mm": surface_depth_mm,
+            "surface_valid_points": valid_points,
+            "place_z_mm": place_z,
+            "route": route_key,
+            "hold_id": inspect_reply.command_id,
+        }
+
+    def _measure_place_surface(
+        self,
+        target: StackPlaceTarget,
+        inspection_pose: tuple[float, float, float, float, float, float],
+    ) -> tuple[tuple[float, float, float], float, int]:
+        """在放置观察位进行多帧三维顶面识别和波动检查。"""
+
+        prefix = "tasks.task3.placement_vision"
+        count = max(1, int(self.settings.get(f"{prefix}.temporal_samples", 5)))
+        spread_limit = float(self.settings.get(f"{prefix}.max_surface_spread_mm", 4.0))
+        radius = float(self.settings.get(f"{prefix}.sample_radius_mm", 8.0))
+        min_points = int(self.settings.get(f"{prefix}.min_valid_points", 20))
+        depth_min = float(self.settings.get("camera.depth_min_mm", 300.0))
+        depth_max = float(self.settings.get("camera.depth_max_mm", 1500.0))
+        surfaces: list[tuple[float, float, float]] = []
+        depths: list[float] = []
+        point_counts: list[int] = []
+        errors: list[str] = []
+
+        for _ in range(count):
+            self._check_continue()
+            bundle = self.camera.get_frame()
+            self.bus.emit("frame", bundle.color_bgr)
+            try:
+                surface, depth_mm, valid_points = (
+                    self.calibration.locate_surface_at_robot_xy(
+                        bundle,
+                        (target.place_x_mm, target.place_y_mm),
+                        inspection_pose,
+                        depth_min_mm=depth_min,
+                        depth_max_mm=depth_max,
+                        radius_mm=radius,
+                        min_points=min_points,
+                    )
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            surfaces.append(surface)
+            depths.append(depth_mm)
+            point_counts.append(valid_points)
+
+        required = max(1, (count + 1) // 2)
+        if len(surfaces) < required:
+            detail = errors[-1] if errors else "无有效三维结果"
+            raise TaskError(
+                f"放置顶面多帧有效结果不足：{len(surfaces)}/{count}；{detail}"
+            )
+        z_values = [surface[2] for surface in surfaces]
+        spread = max(z_values) - min(z_values)
+        if spread > spread_limit:
+            raise TaskError(
+                f"放置顶面多帧 Z 波动 {spread:.2f} mm，超过允许 {spread_limit:.2f} mm"
+            )
+        median_surface = tuple(
+            float(statistics.median(surface[axis] for surface in surfaces))
+            for axis in range(3)
+        )
+        return (
+            median_surface,
+            float(statistics.median(depths)),
+            int(statistics.median(point_counts)),
+        )
 
     def _acquire_stable_candidate(self, task_name: str) -> tuple[Detection, Any] | None:
         detector = self.detectors[task_name]
@@ -455,7 +669,11 @@ class TaskOrchestrator:
         return math.hypot(dx, dy) <= tolerance
 
     def _resolve_place(self, task_name: str, det: Detection) -> tuple[str, Mapping[str, Any]]:
-        prefix = "simulation.place_points" if self.simulation_world is not None else "robot.place_points"
+        prefix = (
+            "simulation.place_points"
+            if self.simulation_world is not None
+            else "robot.place_points"
+        )
         points = self.settings.get(f"{prefix}.{task_name}")
         if not isinstance(points, Mapping):
             raise TaskError(f"缺少 {task_name} 放置点配置")
@@ -482,7 +700,15 @@ class TaskOrchestrator:
             point = points[key]
             if not isinstance(point, Mapping):
                 continue
-            if all(isinstance(point.get(field), (int, float)) for field in ("x_mm", "y_mm", "down_mm")):
+            required_fields = (
+                ("x_mm", "y_mm") if task_name == "task3" else ("x_mm", "y_mm", "down_mm")
+            )
+            if all(
+                isinstance(point.get(field), (int, float))
+                and not isinstance(point.get(field), bool)
+                and math.isfinite(float(point[field]))
+                for field in required_fields
+            ):
                 return key, point
         raise TaskError(
             f"{task_name} 的目标 {det.class_name}/{det.color}/{det.shape} 没有可用放置点；"

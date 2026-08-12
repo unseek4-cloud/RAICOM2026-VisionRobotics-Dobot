@@ -56,6 +56,9 @@ class SimulationWorld:
         self.width = int(settings.get("camera.width", 640))
         self.height = int(settings.get("camera.height", 480))
         self.table_depth_mm = float(settings.get("simulation.table_depth_mm", 700.0))
+        self.place_base_robot_z_mm = float(
+            settings.get("simulation.place_base_robot_z_mm", 90.0)
+        )
         if self.width < 320 or self.height < 240:
             raise CameraError("模拟画面至少需要 320×240")
         if self.table_depth_mm <= 0:
@@ -70,6 +73,8 @@ class SimulationWorld:
         )
         self._lock = threading.RLock()
         self._frame_number = 0
+        self._placement_stacks_mm: dict[tuple[float, float], float] = {}
+        self._placement_view: dict[str, Any] | None = None
         self._objects: dict[str, SimulationObject] = {
             item.object_id: item for item in self._default_objects()
         }
@@ -136,6 +141,8 @@ class SimulationWorld:
         with self._lock:
             self._objects = {item.object_id: item for item in self._default_objects()}
             self._frame_number = 0
+            self._placement_stacks_mm.clear()
+            self._placement_view = None
 
     def objects(self, task: str | None = None) -> tuple[SimulationObject, ...]:
         with self._lock:
@@ -148,6 +155,54 @@ class SimulationWorld:
         """移除已抓取工件；不存在时返回 False，便于发现重复命令。"""
         with self._lock:
             return self._objects.pop(str(object_id), None) is not None
+
+    @staticmethod
+    def _place_key(place_x_mm: float, place_y_mm: float) -> tuple[float, float]:
+        return round(float(place_x_mm), 3), round(float(place_y_mm), 3)
+
+    def begin_placement_inspection(
+        self,
+        place_x_mm: float,
+        place_y_mm: float,
+        inspection_z_mm: float,
+        object_height_mm: float,
+    ) -> None:
+        """把模拟相机切换到目标放置点上方，吸盘继续保持工件。"""
+
+        key = self._place_key(place_x_mm, place_y_mm)
+        with self._lock:
+            stack_height = self._placement_stacks_mm.get(key, 0.0)
+            surface_z = self.place_base_robot_z_mm + stack_height
+            depth_mm = float(inspection_z_mm) - surface_z
+            if depth_mm <= 0:
+                raise CameraError("模拟放置观察位低于当前堆叠顶面")
+            self._placement_view = {
+                "key": key,
+                "surface_z_mm": surface_z,
+                "depth_mm": depth_mm,
+                "object_height_mm": float(object_height_mm),
+            }
+
+    def complete_placement(self) -> None:
+        """完成当前模拟放置，使下一次深度帧能看到新的堆叠顶面。"""
+
+        with self._lock:
+            if self._placement_view is None:
+                raise CameraError("模拟环境当前没有待完成的动态放置")
+            key = self._placement_view["key"]
+            self._placement_stacks_mm[key] = self._placement_stacks_mm.get(key, 0.0) + float(
+                self._placement_view["object_height_mm"]
+            )
+            self._placement_view = None
+
+    def cancel_placement_view(self) -> None:
+        with self._lock:
+            self._placement_view = None
+
+    def placement_stack_height_mm(self, place_x_mm: float, place_y_mm: float) -> float:
+        key = self._place_key(place_x_mm, place_y_mm)
+        with self._lock:
+            return float(self._placement_stacks_mm.get(key, 0.0))
 
     @staticmethod
     def _object_mask(
@@ -177,6 +232,9 @@ class SimulationWorld:
             raise CameraError("模拟画面生成需要 OpenCV（cv2）") from exc
         with self._lock:
             objects = tuple(self._objects.values())
+            placement_view = (
+                None if self._placement_view is None else dict(self._placement_view)
+            )
             self._frame_number += 1
             frame_number = self._frame_number
         # 带细网格的浅灰桌面，便于肉眼确认画面在持续刷新。
@@ -189,6 +247,19 @@ class SimulationWorld:
         depth = np.full(
             (self.height, self.width), self.table_depth_mm, dtype=np.float32
         )
+
+        if placement_view is not None:
+            # 观察阶段相机已移动到放置点上方。画面只表示目标顶面，深度由与
+            # 抓取台面完全独立的机器人 Z 基准和当前堆叠高度生成。
+            depth[:, :] = float(placement_view["depth_mm"])
+            color[:, :] = (185, 205, 215)
+            return FrameBundle(
+                color_bgr=color,
+                depth_mm=depth,
+                intrinsics=self.intrinsics,
+                timestamp_ms=time.time() * 1000.0,
+                frame_number=frame_number,
+            )
 
         for obj in objects:
             ys, xs, mask = self._object_mask(obj, self.width, self.height)

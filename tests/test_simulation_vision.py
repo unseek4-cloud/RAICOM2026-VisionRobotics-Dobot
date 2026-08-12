@@ -73,7 +73,9 @@ class SimulationVisionTests(unittest.TestCase):
             self.assertAlmostEqual(camera_xyz[2], measured, places=6)
             self.assertAlmostEqual(
                 robot_xyz[2],
-                self.calibration.robot_table_touch_z_mm + expected_height,
+                self.calibration.robot_table_touch_z_mm
+                + expected_height
+                - self.calibration.press_down_mm,
                 places=6,
             )
 

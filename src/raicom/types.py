@@ -67,6 +67,24 @@ class PickTarget:
 
 
 @dataclass(slots=True)
+class StackPlaceTarget:
+    """任务三动态叠放的一次抓取与目标观察参数。"""
+
+    task: str
+    object_id: str
+    pick_x_mm: float
+    pick_y_mm: float
+    pick_z_mm: float
+    object_height_mm: float
+    place_x_mm: float
+    place_y_mm: float
+    inspection_x_mm: float
+    inspection_y_mm: float
+    inspection_z_mm: float
+    route_key: str
+
+
+@dataclass(slots=True)
 class RobotReply:
     command_id: str
     status: str
