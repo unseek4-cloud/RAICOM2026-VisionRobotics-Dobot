@@ -108,7 +108,7 @@ calibration:
   # 正的 press_down_mm 会让吸盘在计算表面基础上再向下压一点；初次验证保持 0。
   press_down_mm: 1.0
   xy_offset_mm: [6.0, 5.0]  #[5.0, 12.8]  # ★现场必填：相机光心到吸盘中心的 XY 偏移，单位 mm。正值表示相机在吸盘前方/右方。
-  min_object_height_mm: 1.0
+  min_object_height_mm: 0.0
   max_object_height_mm: 120.0
 
 robot:
@@ -122,9 +122,9 @@ robot:
 
   # 第二层软件保护。请根据 E6 实际安装、用户坐标系和低速示教结果填写，不能照抄示例。
   workspace_mm:
-    x: [155.0, 290.0]
+    x: [155.0, 310.0]
     y: [-150.0, 135.0]
-    z: [100.0, 435.0]
+    z: [98.0, 435.0]
 
   motion:
     orientation_mm_deg: [180.0, 0, 0]  # 抓取姿态 [Rx,Ry,Rz]，通常吸盘竖直向下
@@ -166,7 +166,7 @@ robot:
     task2:
       default: {x_mm: 250, y_mm: 120, down_mm: 80}
       red:     {x_mm: 250, y_mm: 120, down_mm: 80}
-      blue:    {x_mm: 250, y_mm: 120, down_mm: 80}
+      blue:    {x_mm: 300, y_mm: 120, down_mm: 80}
       green:   {x_mm: 250, y_mm: 120, down_mm: 80}
       yellow:  {x_mm: 250, y_mm: 120, down_mm: 80}
     task3:
