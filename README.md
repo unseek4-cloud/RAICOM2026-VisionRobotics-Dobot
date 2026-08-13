@@ -98,19 +98,19 @@ RAICOM-Project/
 
 示例标定文件只用于验证解析逻辑，绝不能用于比赛现场抓取。模型目录也不会放置虚假的比赛权重。
 
-## 4. HKtest 环境与依赖
+## 4. raicom-e6 环境与依赖
 
 ### 4.1 必须先激活指定环境
 
 在 PowerShell 中执行：
 
 ```powershell
-conda activate D:\anaconda\envs\HKtest
+conda activate D:\anaconda\envs\raicom-e6
 Set-Location D:\CAIM\RAICOM-Project
 python -c "import sys; print(sys.executable); print(sys.version)"
 ```
 
-输出解释器应位于 `D:\anaconda\envs\HKtest`。不要在未激活环境时直接双击 `python.exe`；Conda 环境的 DLL 搜索路径可能尚未正确建立。
+输出解释器应位于 `D:\anaconda\envs\raicom-e6`。不要在未激活环境时直接双击 `python.exe`；Conda 环境的 DLL 搜索路径可能尚未正确建立。
 
 ### 4.2 当前截图中已经存在的关键包
 
@@ -159,7 +159,7 @@ python main.py --real --check
 ## 5. 第一次运行：只使用模拟模式
 
 ```powershell
-conda activate D:\anaconda\envs\HKtest
+conda activate D:\anaconda\envs\raicom-e6
 Set-Location D:\CAIM\RAICOM-Project
 python main.py --demo
 ```
@@ -641,7 +641,7 @@ python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --resume
 ### 11.1 永远按层次推进
 
 1. **机械安全：**确认实体急停、机械臂固定、吸盘安装、线缆无干涉、工作区清空。
-2. **环境自检：**激活 HKtest，执行 `python main.py --check`。
+2. **环境自检：**激活 raicom-e6，执行 `python main.py --check`。
 3. **网络：**给 PC、视觉设备和机器人设置同网段静态 IP；确认端口未占用和防火墙放行。
 4. **D435：**使用 RealSense Viewer 验证 USB 3、彩色/深度流、序列号和深度尺度，关闭 Viewer 后再启动本项目。
 5. **DVS：**只测试 TCP 连通和任务一结果，不启动机器人。
@@ -738,7 +738,7 @@ python main.py --real
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
 ```
 
-先检查是否激活 HKtest、显卡驱动和系统重启状态。不要先重装 Torch。程序可临时回退 CPU，但必须重新验证是否能在 10 分钟内完成。
+先检查是否激活 raicom-e6、显卡驱动和系统重启状态。不要先重装 Torch。程序可临时回退 CPU，但必须重新验证是否能在 10 分钟内完成。
 
 ### 14.4 找不到 D435
 
