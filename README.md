@@ -614,16 +614,34 @@ names:
 
 类别只是示例，必须按现场道具重做。任务三的模板在 `datasets/task3/data.yaml`，默认示例为 `known_pattern` 和 `different_pattern`。项目训练入口强制要求 `--base` 指向已经存在的本地基础权重，不会主动联网下载。比赛前应把完整权重缓存到 `tools/offline_weights/yolo11n.pt`。
 
-任务二最简训练命令：
+任务二最简训练命令(新训练)：
 
 ```powershell
-python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+
+python tools/train_yolo.py `
+  --task task2 `
+  --data datasets/task2/data.yaml `
+  --base tools/offline_weights/yolo11n.pt `
+  --epochs 150 `
+  --imgsz 640 `
+  --batch 8 `
+  --device 0
+
 ```
 
-任务三：
+任务三(新训练)：
 
 ```powershell
-python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
+
+python tools/train_yolo.py `
+  --task task3 `
+  --data datasets/task3/data.yaml `
+  --base tools/offline_weights/yolo11n.pt `
+  --epochs 150 `
+  --imgsz 640 `
+  --batch 8 `
+  --device 0
+
 ```
 
 脚本默认把训练 checkpoint 写到项目和 Git 工作区之外的 `D:/RAICOM-YOLO-Runs`，正式模型仍复制回 `models/task2.pt` 或 `models/task3.pt`。保存权重时先写临时文件再原子替换，并对 Windows 文件临时占用自动重试，避免直接覆盖 `last.pt` 时因 `Errno 22` 中止。训练完成后使用 `data.yaml` 的 `test` 集评估最佳权重，指标和图表也写入 `D:/RAICOM-YOLO-Runs`。紧急情况下可加 `--skip-test` 跳过自动测试，但正式模型不建议这样做。若程序出现下载行为，说明 `--base` 指向的本地权重不完整，应立即停止并检查离线文件；现场无云端网络，不能依赖下载。
