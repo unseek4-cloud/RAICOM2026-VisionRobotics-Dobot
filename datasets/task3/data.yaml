@@ -6,5 +6,7 @@ val: images/val
 test: images/test
 
 names:
-  0: known_pattern
-  1: different_pattern
+  0: card
+  1: circula
+  2: cube_rad
+  3: cube_bule

@@ -9,12 +9,24 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import os
 import shutil
 import sys
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# 训练 checkpoint 不再写进 VS Code/Git 正在监视的项目目录。按比赛电脑约定，
+# 默认使用 D 盘独立目录；正式模型仍会复制回 PROJECT_ROOT/models。
+DEFAULT_RUNS_DIR = Path("D:/RAICOM-YOLO-Runs")
+_CHECKPOINT_RETRY_COUNT = 12
+_TRANSIENT_ERRNOS = {errno.EACCES, errno.EBUSY, errno.EINVAL, errno.EPERM}
+_TRANSIENT_WINERRORS = {5, 32, 33, 87}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,8 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base",
         type=Path,
-        required=True,
-        help="本地基础权重，例如 tools/offline_weights/yolo11n.pt；不会自动下载",
+        default=None,
+        help="新训练所用本地基础权重；使用 --resume 时可省略",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="从 last.pt 继续训练，并把后续 checkpoint 迁移到新的 D 盘训练目录",
     )
     parser.add_argument("--epochs", type=int, default=80, help="训练轮数，默认 80")
     parser.add_argument("--imgsz", type=int, default=640, help="训练图像尺寸，默认 640")
@@ -35,8 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--project",
         type=Path,
-        default=PROJECT_ROOT / "runs",
-        help="训练过程目录",
+        default=DEFAULT_RUNS_DIR,
+        help=f"训练过程目录；默认 {DEFAULT_RUNS_DIR}",
     )
     parser.add_argument("--name", default=None, help="训练名称；默认 task2_field/task3_field")
     parser.add_argument("--patience", type=int, default=20, help="早停等待轮数")
@@ -55,6 +73,77 @@ def _existing_file(path: Path, label: str) -> Path:
     return resolved
 
 
+def _is_transient_checkpoint_error(exc: OSError) -> bool:
+    return exc.errno in _TRANSIENT_ERRNOS or getattr(exc, "winerror", None) in (
+        _TRANSIENT_WINERRORS
+    )
+
+
+def _replace_checkpoint_with_retry(source: Path, destination: Path) -> None:
+    """在 Windows 临时占用解除后原子替换 checkpoint。"""
+
+    last_error: OSError | None = None
+    for attempt in range(1, _CHECKPOINT_RETRY_COUNT + 1):
+        try:
+            source.replace(destination)
+            return
+        except OSError as exc:
+            if not _is_transient_checkpoint_error(exc):
+                raise
+            last_error = exc
+            delay = min(2.0, 0.25 * attempt)
+            print(
+                f"[权重保存重试] {destination.name} 暂时被占用或文件系统拒绝覆盖，"
+                f"{delay:.2f} 秒后重试（{attempt}/{_CHECKPOINT_RETRY_COUNT}）：{exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+    assert last_error is not None
+    raise last_error
+
+
+def _build_reliable_detection_trainer(base_trainer: type[Any]) -> type[Any]:
+    """用临时文件+原子替换保存权重，规避 Windows 直接覆盖 last.pt 崩溃。"""
+
+    class ReliableDetectionTrainer(base_trainer):
+        def save_model(self) -> bool:
+            token = f"{os.getpid()}-{uuid.uuid4().hex}"
+            original_last, original_best = self.last, self.best
+            temporary_last = self.wdir / f".last-{token}.tmp"
+            temporary_best = self.wdir / f".best-{token}.tmp"
+            try:
+                self.last, self.best = temporary_last, temporary_best
+                result = super().save_model()
+                self.last, self.best = original_last, original_best
+                if not temporary_last.is_file():
+                    raise OSError(f"Ultralytics 未生成临时 checkpoint：{temporary_last}")
+                _replace_checkpoint_with_retry(temporary_last, original_last)
+                if temporary_best.is_file():
+                    _replace_checkpoint_with_retry(temporary_best, original_best)
+                return bool(result)
+            finally:
+                self.last, self.best = original_last, original_best
+                # 替换成功后源文件已不存在；异常退出时清理残留临时文件。
+                for temporary in (temporary_last, temporary_best):
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+    return ReliableDetectionTrainer
+
+
+def _unique_resume_dir(project_dir: Path, task: str, requested_name: str | None) -> Path:
+    base_name = requested_name or f"{task}_resume_{datetime.now():%Y%m%d_%H%M%S}"
+    candidate = project_dir / base_name
+    suffix = 2
+    while candidate.exists():
+        candidate = project_dir / f"{base_name}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.epochs < 1 or args.imgsz < 160 or args.batch < 1 or args.workers < 0:
@@ -63,31 +152,68 @@ def main() -> int:
 
     try:
         data_yaml = _existing_file(args.data, "数据集配置")
-        base_weight = _existing_file(args.base, "本地基础权重")
+        resume_weight = (
+            _existing_file(args.resume, "恢复训练权重") if args.resume is not None else None
+        )
+        if resume_weight is None:
+            if args.base is None:
+                print("[参数错误] 新训练必须提供 --base；恢复训练请提供 --resume", file=sys.stderr)
+                return 2
+            base_weight = _existing_file(args.base, "本地基础权重")
+        else:
+            base_weight = None
         from ultralytics import YOLO
+        from ultralytics.models.yolo.detect import DetectionTrainer
     except (FileNotFoundError, ImportError) as exc:
         print(f"[准备失败] {exc}", file=sys.stderr)
         return 3
 
     run_name = args.name or f"{args.task}_field"
     project_dir = args.project.expanduser().resolve()
-    print(f"开始训练 {args.task}：data={data_yaml}")
-    print("训练时保持离线；若程序尝试下载，说明 --base 指向的本地权重不完整。")
+    try:
+        project_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[准备失败] 无法创建 D 盘训练目录 {project_dir}：{exc}", file=sys.stderr)
+        return 3
 
-    model = YOLO(str(base_weight))
-    model.train(
-        data=str(data_yaml),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        device=args.device,
-        workers=args.workers,
-        project=str(project_dir),
-        name=run_name,
-        patience=args.patience,
-        exist_ok=False,
-        verbose=True,
-    )
+    reliable_trainer = _build_reliable_detection_trainer(DetectionTrainer)
+    if resume_weight is not None:
+        resume_save_dir = _unique_resume_dir(project_dir, args.task, args.name)
+        run_name = resume_save_dir.name
+        print(f"继续训练 {args.task}：checkpoint={resume_weight}")
+        print(f"后续 checkpoint 迁移到 D 盘独立目录：{resume_save_dir}")
+        model = YOLO(str(resume_weight))
+        model.train(
+            resume=str(resume_weight),
+            save_dir=str(resume_save_dir),
+            imgsz=args.imgsz,
+            batch=args.batch,
+            device=args.device,
+            workers=args.workers,
+            patience=args.patience,
+            verbose=True,
+            trainer=reliable_trainer,
+        )
+    else:
+        print(f"开始训练 {args.task}：data={data_yaml}")
+        print(f"checkpoint 输出目录：{project_dir}")
+        print("训练时保持离线；若程序尝试下载，说明 --base 指向的本地权重不完整。")
+        assert base_weight is not None
+        model = YOLO(str(base_weight))
+        model.train(
+            data=str(data_yaml),
+            epochs=args.epochs,
+            imgsz=args.imgsz,
+            batch=args.batch,
+            device=args.device,
+            workers=args.workers,
+            project=str(project_dir),
+            name=run_name,
+            patience=args.patience,
+            exist_ok=False,
+            verbose=True,
+            trainer=reliable_trainer,
+        )
 
     # save_dir 由 Trainer 给出，避免猜测 Ultralytics 自动编号后的目录名。
     trainer = getattr(model, "trainer", None)

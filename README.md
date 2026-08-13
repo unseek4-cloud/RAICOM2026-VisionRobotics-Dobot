@@ -626,7 +626,13 @@ python tools/train_yolo.py --task task2 --data datasets/task2/data.yaml --base t
 python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --base tools/offline_weights/yolo11n.pt --epochs 40 --imgsz 640 --batch 8 --device 0
 ```
 
-脚本训练成功后会从 Ultralytics 实际 `save_dir` 找到 `best.pt`，自动复制为 `models/task2.pt` 或 `models/task3.pt`，随后使用 `data.yaml` 的 `test` 集评估最佳权重，指标和图表写入 `runs` 下的测试目录。紧急情况下可加 `--skip-test` 跳过自动测试，但正式模型不建议这样做。若程序出现下载行为，说明 `--base` 指向的本地权重不完整，应立即停止并检查离线文件；现场无云端网络，不能依赖下载。
+脚本默认把训练 checkpoint 写到项目和 Git 工作区之外的 `D:/RAICOM-YOLO-Runs`，正式模型仍复制回 `models/task2.pt` 或 `models/task3.pt`。保存权重时先写临时文件再原子替换，并对 Windows 文件临时占用自动重试，避免直接覆盖 `last.pt` 时因 `Errno 22` 中止。训练完成后使用 `data.yaml` 的 `test` 集评估最佳权重，指标和图表也写入 `D:/RAICOM-YOLO-Runs`。紧急情况下可加 `--skip-test` 跳过自动测试，但正式模型不建议这样做。若程序出现下载行为，说明 `--base` 指向的本地权重不完整，应立即停止并检查离线文件；现场无云端网络，不能依赖下载。
+
+从旧训练目录中的 `last.pt` 恢复时，脚本会保留 checkpoint 内的轮次、优化器和目标总轮数，并把后续权重迁移到新的 D 盘独立目录：
+
+```powershell
+python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --resume runs/task3_field-2/weights/last.pt --device 0
+```
 
 部署前必须用未参与训练的图像验证误检、漏检、相似图案、旋转、遮挡、反光和颜色变化，不能只确认训练集图片。
 

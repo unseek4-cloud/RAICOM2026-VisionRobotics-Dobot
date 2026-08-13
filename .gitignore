@@ -5,9 +5,15 @@ __pycache__/
 .idea/
 .vscode/
 .qa/
+runs/
+datasets/**/labels/*.cache
+datasets/**/*.txt
 logs/*.log
 logs/*.jsonl
 models/*.pt
+tools/offline_weights/*.pt
 config/calibration/CaliMatrixData.yaml
 *.bag
-
+*.[jJ][pP][gG]
+*.pt
+datasets/**/*.json
