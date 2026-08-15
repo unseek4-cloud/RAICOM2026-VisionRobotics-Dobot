@@ -41,14 +41,14 @@ local CFG = {
         rx = 180.0, ry = 0, rz = 0,
     },
 
-    -- ★现场必填：吸盘竖直抓取时的姿态。
+    -- ★现场必填：吸盘竖直姿态；rz=0 是放置回正基准，抓取 rz 由 OBB 动态下发。
     pick_orientation = {rx = 180.0, ry = 0, rz = 0},
 
     -- ★现场必填：按当前用户坐标系低速示教得到的软件工作空间。
     workspace = {
         x_min = 155.0, x_max = 310.0,
         y_min = -150.0, y_max = 135.0,
-        z_min = 98.0, z_max = 435.0,
+        z_min = 85.0, z_max = 435.0,
     },
 
     -- 运动参数。下列初值与 settings.yaml 一致；首次真机应在两处同步调低后再单步。
@@ -278,6 +278,10 @@ local function validate_static_config()
             return false, "pick_orientation." .. key .. " is not configured"
         end
     end
+    if orientation.rz ~= 0 then
+        -- 静态配置只接受明确的回正基准 0；动态抓取 RZ 由 Python 单件下发。
+        return false, "pick_orientation.rz must be 0"
+    end
 
     local ws = CFG.workspace
     for _, axis in ipairs({"x", "y", "z"}) do
@@ -463,6 +467,11 @@ local function almost_equal(left, right)
     return is_finite(left) and is_finite(right) and math.abs(left - right) <= 0.0001
 end
 
+local function valid_shortest_pick_rz(value)
+    -- OBB 矩形长轴以 180° 为同一方向，Python 必须选 [-90,90) 的最短等价角。
+    return is_finite(value) and value >= -90.0 and value < 90.0
+end
+
 -- Python 会把 settings.yaml 中已通过安全校验的现场参数显式放入每条运动命令；
 -- Lua 再与本脚本 CFG 比较。两处不一致时拒绝动作，避免改错文件后静默运行。
 local function validate_request_context(line)
@@ -606,11 +615,13 @@ local function parse_pick_job(line)
     local orientation = CFG.pick_orientation
     if not almost_equal(job.pick_rx, orientation.rx)
         or not almost_equal(job.pick_ry, orientation.ry)
-        or not almost_equal(job.pick_rz, orientation.rz)
         or not almost_equal(job.place_rx, orientation.rx)
         or not almost_equal(job.place_ry, orientation.ry)
-        or not almost_equal(job.place_rz, orientation.rz) then
+        or not almost_equal(job.place_rz, 0.0) then
         return nil, "CONFIG_MISMATCH_ORIENTATION"
+    end
+    if not valid_shortest_pick_rz(job.pick_rz) then
+        return nil, "PICK_RZ_NOT_SHORTEST"
     end
 
     local sign = CFG.motion.z_up_sign
@@ -646,6 +657,11 @@ local function build_job_poses(job)
         pick_lift = {
             x = job.pick_x, y = job.pick_y, z = job.transfer_z,
             rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
+        },
+        -- 抬升到安全高度后保持 XYZ，先把工件回正到 RZ=0，再水平转运。
+        pick_straighten = {
+            x = job.pick_x, y = job.pick_y, z = job.transfer_z,
+            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
         },
         place_transfer = {
             x = job.place_x, y = job.place_y, z = job.transfer_z,
@@ -704,6 +720,10 @@ local function pick_and_place(socket, command_id, line)
     -- 用户要求：吸住后 X/Y 不变，仅抬高 Z。
     send_status(socket, command_id, "running", {phase = "lift_pick"})
     ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
+    if not ok then return false, code, holding_part end
+
+    send_status(socket, command_id, "running", {phase = "straighten_rz"})
+    ok, code = checked_movl(poses.pick_straighten, CFG.motion.pick_v)
     if not ok then return false, code, holding_part end
 
     -- 用户要求：保持抬升后的 Z 不变，只将 X/Y 移到放置点。
@@ -769,12 +789,13 @@ local function parse_stack_pick_job(line)
     end
 
     local orientation = CFG.pick_orientation
-    for _, prefix in ipairs({"pick", "inspection"}) do
-        if not almost_equal(job[prefix .. "_rx"], orientation.rx)
-            or not almost_equal(job[prefix .. "_ry"], orientation.ry)
-            or not almost_equal(job[prefix .. "_rz"], orientation.rz) then
-            return nil, "CONFIG_MISMATCH_ORIENTATION"
-        end
+    if not almost_equal(job.pick_rx, orientation.rx)
+        or not almost_equal(job.pick_ry, orientation.ry)
+        or not valid_shortest_pick_rz(job.pick_rz)
+        or not almost_equal(job.inspection_rx, orientation.rx)
+        or not almost_equal(job.inspection_ry, orientation.ry)
+        or not almost_equal(job.inspection_rz, 0.0) then
+        return nil, "CONFIG_MISMATCH_ORIENTATION"
     end
     local sign = CFG.motion.z_up_sign
     if not almost_equal(job.approach_z, job.pick_z + sign * CFG.motion.approach_mm) then
@@ -802,6 +823,10 @@ local function build_stack_pick_poses(job)
         pick_lift = {
             x = job.pick_x, y = job.pick_y, z = job.lift_z,
             rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
+        },
+        pick_straighten = {
+            x = job.pick_x, y = job.pick_y, z = job.lift_z,
+            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
         },
         -- 不能在任意抓取 XY 直接升到 410：现场部分高位终点逆解无解。
         -- 先以吸取后的低位 Z 移到已知可达的观察 XY，再在该 XY 垂直上升。
@@ -861,6 +886,11 @@ local function pick_to_inspection(socket, command_id, job, poses)
     phase = "lift_pick"
     send_status(socket, command_id, "running", {phase = phase})
     ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
+    if not ok then return false, code, holding_part, phase end
+
+    phase = "straighten_rz"
+    send_status(socket, command_id, "running", {phase = phase})
+    ok, code = checked_movl(poses.pick_straighten, CFG.motion.pick_v)
     if not ok then return false, code, holding_part, phase end
 
     -- 先保持吸取后的低位 Z，只移动 XY 到观察位 XY；再在已知可达的

@@ -60,6 +60,8 @@ class SimulationVisionTests(unittest.TestCase):
         self.assertEqual(bundle.depth_mm.shape, (480, 640))
 
         for detection in detections:
+            self.assertIsNotNone(detection.oriented_bbox)
+            self.assertIsNotNone(detection.image_angle_deg)
             measured = self.camera.measure_depth_mm(bundle, detection.bbox)
             expected_height = float(detection.extra["height_mm"])
             self.assertAlmostEqual(
@@ -67,6 +69,22 @@ class SimulationVisionTests(unittest.TestCase):
                 self.world.table_depth_mm - expected_height,
                 places=6,
             )
+            if detection.shape != "cylinder":
+                from raicom.vision.yolo_detector import oriented_box_axis
+
+                axis_center, axis_endpoint, _ = oriented_box_axis(
+                    detection.oriented_bbox
+                )
+                rz = self.calibration.image_axis_to_robot_rz_deg(
+                    axis_center, axis_endpoint, measured, bundle.intrinsics
+                )
+                expected = next(
+                    item.angle_deg
+                    for item in self.world.objects()
+                    if item.object_id == detection.object_id
+                )
+                expected = (expected + 90.0) % 180.0 - 90.0
+                self.assertAlmostEqual(rz, expected, places=6)
             camera_xyz, robot_xyz = self.calibration.locate(
                 detection.pixel_center, measured, bundle.intrinsics
             )

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""在比赛电脑本地训练任务二/任务三 YOLO 模型。
+"""在比赛电脑本地训练任务二/任务三 YOLO-OBB 旋转框模型。
 
 脚本不会自动联网下载权重。比赛前请把可离线使用的基础权重放到本地，
 现场完成拍照、标注和 data.yaml 后再运行本工具。训练成功时把 best.pt 复制到
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import math
 import os
 import shutil
 import sys
@@ -104,7 +105,7 @@ def _replace_checkpoint_with_retry(source: Path, destination: Path) -> None:
 
 
 def _build_reliable_detection_trainer(base_trainer: type[Any]) -> type[Any]:
-    """用临时文件+原子替换保存权重，规避 Windows 直接覆盖 last.pt 崩溃。"""
+    """为 Ultralytics Trainer 增加可靠 checkpoint 保存（名称保留以兼容旧调用）。"""
 
     class ReliableDetectionTrainer(base_trainer):
         def save_model(self) -> bool:
@@ -134,6 +135,49 @@ def _build_reliable_detection_trainer(base_trainer: type[Any]) -> type[Any]:
     return ReliableDetectionTrainer
 
 
+def _validate_obb_labels(data_yaml: Path) -> None:
+    """拒绝把旧 5 列水平框误用于 OBB 训练。"""
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("校验 OBB 数据集需要 PyYAML") from exc
+    payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"数据集配置不是 YAML 对象：{data_yaml}")
+    root_value = payload.get("path", data_yaml.parent)
+    dataset_root = Path(str(root_value)).expanduser()
+    if not dataset_root.is_absolute():
+        dataset_root = (data_yaml.parent / dataset_root).resolve()
+    label_root = dataset_root / "labels"
+    label_files = sorted(label_root.rglob("*.txt")) if label_root.is_dir() else []
+    if not label_files:
+        raise ValueError(f"没有找到 OBB 标签：{label_root}")
+    for label_file in label_files:
+        for line_number, raw_line in enumerate(
+            label_file.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            fields = raw_line.split()
+            if not fields:
+                continue
+            if len(fields) != 9:
+                raise ValueError(
+                    f"{label_file}:{line_number} 有 {len(fields)} 列；OBB 必须是 "
+                    "class x1 y1 x2 y2 x3 y3 x4 y4 共 9 列"
+                )
+            try:
+                class_id = int(fields[0])
+                coordinates = [float(value) for value in fields[1:]]
+            except ValueError as exc:
+                raise ValueError(f"{label_file}:{line_number} 含非数字 OBB 字段") from exc
+            if class_id < 0 or not all(
+                math.isfinite(value) and 0.0 <= value <= 1.0 for value in coordinates
+            ):
+                raise ValueError(
+                    f"{label_file}:{line_number} 类别必须非负，归一化四点坐标必须在 [0,1]"
+                )
+
+
 def _unique_resume_dir(project_dir: Path, task: str, requested_name: str | None) -> Path:
     base_name = requested_name or f"{task}_resume_{datetime.now():%Y%m%d_%H%M%S}"
     candidate = project_dir / base_name
@@ -152,6 +196,7 @@ def main() -> int:
 
     try:
         data_yaml = _existing_file(args.data, "数据集配置")
+        _validate_obb_labels(data_yaml)
         resume_weight = (
             _existing_file(args.resume, "恢复训练权重") if args.resume is not None else None
         )
@@ -163,8 +208,8 @@ def main() -> int:
         else:
             base_weight = None
         from ultralytics import YOLO
-        from ultralytics.models.yolo.detect import DetectionTrainer
-    except (FileNotFoundError, ImportError) as exc:
+        from ultralytics.models.yolo.obb import OBBTrainer
+    except (FileNotFoundError, ImportError, OSError, RuntimeError, ValueError) as exc:
         print(f"[准备失败] {exc}", file=sys.stderr)
         return 3
 
@@ -176,13 +221,16 @@ def main() -> int:
         print(f"[准备失败] 无法创建 D 盘训练目录 {project_dir}：{exc}", file=sys.stderr)
         return 3
 
-    reliable_trainer = _build_reliable_detection_trainer(DetectionTrainer)
+    reliable_trainer = _build_reliable_detection_trainer(OBBTrainer)
     if resume_weight is not None:
         resume_save_dir = _unique_resume_dir(project_dir, args.task, args.name)
         run_name = resume_save_dir.name
         print(f"继续训练 {args.task}：checkpoint={resume_weight}")
         print(f"后续 checkpoint 迁移到 D 盘独立目录：{resume_save_dir}")
         model = YOLO(str(resume_weight))
+        if str(getattr(model, "task", "")).lower() != "obb":
+            print("[准备失败] --resume 必须指向 OBB checkpoint", file=sys.stderr)
+            return 3
         model.train(
             resume=str(resume_weight),
             save_dir=str(resume_save_dir),
@@ -200,6 +248,12 @@ def main() -> int:
         print("训练时保持离线；若程序尝试下载，说明 --base 指向的本地权重不完整。")
         assert base_weight is not None
         model = YOLO(str(base_weight))
+        if str(getattr(model, "task", "")).lower() != "obb":
+            print(
+                "[准备失败] --base 必须使用本地 *-obb.pt 权重，普通 detect 权重没有角度头",
+                file=sys.stderr,
+            )
+            return 3
         model.train(
             data=str(data_yaml),
             epochs=args.epochs,

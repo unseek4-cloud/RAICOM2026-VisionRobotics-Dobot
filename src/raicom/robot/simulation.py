@@ -70,6 +70,7 @@ class MockRobot:
             "pick_x_mm": target.pick_x_mm,
             "pick_y_mm": target.pick_y_mm,
             "pick_z_mm": target.pick_z_mm,
+            "pick_rz_deg": target.pick_rz_deg,
             "place_x_mm": target.place_x_mm,
             "place_y_mm": target.place_y_mm,
             "place_down_mm": target.place_down_mm,
@@ -94,6 +95,8 @@ class MockRobot:
                 "object_id": target.object_id,
                 "route_key": target.route_key,
                 "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
+                "pick_rz": target.pick_rz_deg,
+                "place_rz": 0.0,
                 "place": [target.place_x_mm, target.place_y_mm, target.place_down_mm],
             },
         )
@@ -105,6 +108,7 @@ class MockRobot:
             target.pick_x_mm,
             target.pick_y_mm,
             target.pick_z_mm,
+            target.pick_rz_deg,
             target.object_height_mm,
             target.place_x_mm,
             target.place_y_mm,
@@ -127,6 +131,8 @@ class MockRobot:
                 "task": target.task,
                 "object_id": target.object_id,
                 "route_key": target.route_key,
+                "pick_rz": target.pick_rz_deg,
+                "inspection_rz": 0.0,
             },
         )
         if reply.status == "done":
@@ -158,6 +164,7 @@ class MockRobot:
                 "holding_part": False,
                 "hold_id": str(hold_id),
                 "place_z": float(place_z_mm),
+                "place_rz": 0.0,
                 "route_key": target.route_key,
             },
         )

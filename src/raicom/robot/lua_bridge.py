@@ -172,6 +172,7 @@ class LuaBridgeServer:
             "pick_x": target.pick_x_mm,
             "pick_y": target.pick_y_mm,
             "pick_z": target.pick_z_mm,
+            "pick_rz": target.pick_rz_deg,
             "place_x": target.place_x_mm,
             "place_y": target.place_y_mm,
             "place_down_mm": target.place_down_mm,
@@ -181,6 +182,8 @@ class LuaBridgeServer:
                 return self._local_error("", f"坐标字段 {name} 不是数字")
             if not math.isfinite(float(value)):
                 return self._local_error("", f"坐标字段 {name} 为 NaN/Inf")
+        if not -90.0 <= float(target.pick_rz_deg) < 90.0:
+            return self._local_error("", "pick_rz 必须是 [-90,90) 内的最短旋转角")
 
         context, error = self._runtime_context()
         if error:
@@ -212,10 +215,10 @@ class LuaBridgeServer:
             "route_key": str(target.route_key),
             "pick_rx": orientation[0],
             "pick_ry": orientation[1],
-            "pick_rz": orientation[2],
+            "pick_rz": float(target.pick_rz_deg),
             "place_rx": orientation[0],
             "place_ry": orientation[1],
-            "place_rz": orientation[2],
+            "place_rz": 0.0,
             "approach_z": approach_z,
             "transfer_z": transfer_z,
             "place_z": place_z,
@@ -238,6 +241,7 @@ class LuaBridgeServer:
             "pick_x": target.pick_x_mm,
             "pick_y": target.pick_y_mm,
             "pick_z": target.pick_z_mm,
+            "pick_rz": target.pick_rz_deg,
             "object_height_mm": target.object_height_mm,
             "place_x": target.place_x_mm,
             "place_y": target.place_y_mm,
@@ -248,6 +252,8 @@ class LuaBridgeServer:
         error = self._validate_numeric_fields(numeric)
         if error:
             return self._local_error("", error)
+        if not -90.0 <= float(target.pick_rz_deg) < 90.0:
+            return self._local_error("", "pick_rz 必须是 [-90,90) 内的最短旋转角")
 
         context, error = self._runtime_context()
         if error:
@@ -275,10 +281,10 @@ class LuaBridgeServer:
             "route_key": str(target.route_key),
             "pick_rx": orientation[0],
             "pick_ry": orientation[1],
-            "pick_rz": orientation[2],
+            "pick_rz": float(target.pick_rz_deg),
             "inspection_rx": orientation[0],
             "inspection_ry": orientation[1],
-            "inspection_rz": orientation[2],
+            "inspection_rz": 0.0,
             "approach_z": approach_z,
             "lift_z": lift_z,
             "photo_x": photo[0],
@@ -339,10 +345,10 @@ class LuaBridgeServer:
             "hold_id": str(hold_id),
             "place_rx": orientation[0],
             "place_ry": orientation[1],
-            "place_rz": orientation[2],
+            "place_rz": 0.0,
             "inspection_rx": orientation[0],
             "inspection_ry": orientation[1],
-            "inspection_rz": orientation[2],
+            "inspection_rz": 0.0,
             "retract_z": retract_z,
             "photo_x": photo[0],
             "photo_y": photo[1],
@@ -425,6 +431,8 @@ class LuaBridgeServer:
         orientation = self.settings.get("robot.motion.orientation_mm_deg", None)
         if not self._finite_sequence(orientation, 3):
             return {}, "robot.motion.orientation_mm_deg 必须填写 3 个有限姿态值"
+        if not math.isclose(float(orientation[2]), 0.0, abs_tol=1e-6):
+            return {}, "robot.motion.orientation_mm_deg 的 RZ 必须为 0（放置回正基准）"
 
         workspace = self.settings.get("robot.workspace_mm", None)
         if not isinstance(workspace, Mapping):

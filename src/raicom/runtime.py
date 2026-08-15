@@ -75,6 +75,7 @@ class SystemRuntime:
             "descend_pick": "直线下降抓取",
             "vacuum_on": "开启吸盘",
             "lift_pick": "吸取后垂直抬升",
+            "straighten_rz": "安全高度原地回正 RZ=0°",
             "transfer_xy": "保持高度水平转运",
             "descend_place": "直线下降放置",
             "vacuum_off": "释放吸盘",

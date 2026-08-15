@@ -24,6 +24,7 @@ from ..events import EventBus
 from ..interfaces import CalibrationLike, CameraLike, DVSLike, DetectorLike, RobotLike
 from ..result_store import ResultStore
 from ..types import Detection, PickTarget, StackPlaceTarget, TaskState
+from ..vision.yolo_detector import oriented_box_axis
 
 
 class TaskError(RuntimeError):
@@ -209,6 +210,7 @@ class TaskOrchestrator:
                 "像素": "-",
                 "深度(mm)": "-",
                 "机器人XYZ(mm)": "-",
+                "角度/RZ(°)": "-",
                 "状态": "识别完成",
             },
         )
@@ -307,6 +309,29 @@ class TaskOrchestrator:
             det.depth_mm = depth_mm
             det.camera_xyz_mm = tuple(float(v) for v in camera_xyz)
             det.robot_xyz_mm = tuple(float(v) for v in robot_xyz)
+            if det.oriented_bbox is None:
+                raise TaskError(
+                    f"{task_name} {det.class_name} 缺少 OBB 四点框，拒绝猜测抓取 RZ"
+                )
+            try:
+                axis_center, axis_endpoint, _ = oriented_box_axis(det.oriented_bbox)
+                # 圆柱体绕 Z 旋转后轮廓不变，直接保持回正，避免 OBB 角度随机抖动。
+                pick_rz = (
+                    0.0
+                    if det.shape == "cylinder"
+                    else self.calibration.image_axis_to_robot_rz_deg(
+                        axis_center,
+                        axis_endpoint,
+                        depth_mm,
+                        bundle.intrinsics,
+                    )
+                )
+            except Exception as exc:
+                raise TaskError(f"工件角度换算失败，拒绝运动：{exc}") from exc
+            if not math.isfinite(pick_rz) or not -90.0 <= pick_rz < 90.0:
+                raise TaskError(f"抓取 RZ={pick_rz!r} 不在最短旋转范围 [-90,90)")
+            det.pick_rz_deg = float(pick_rz)
+            det.extra["pick_rz_deg"] = float(pick_rz)
             route_key, place = self._resolve_place(task_name, det)
             object_height_mm = self.calibration.object_height_mm(depth_mm)
             det.extra["object_height_mm"] = object_height_mm
@@ -315,12 +340,14 @@ class TaskOrchestrator:
             self._emit_detection_row(det)
 
             self.log.info(
-                "%s 抓取目标 %s：像素=%s 深度=%.2fmm 机器人=(%.2f,%.2f,%.2f) → %s",
+                "%s 抓取目标 %s：像素=%s 深度=%.2fmm 机器人=(%.2f,%.2f,%.2f) "
+                "最短RZ=%+.2f° → %s",
                 task_name,
                 det.class_name,
                 det.pixel_center,
                 depth_mm,
                 *robot_xyz,
+                pick_rz,
                 route_key,
             )
 
@@ -340,6 +367,7 @@ class TaskOrchestrator:
                     pick_x_mm=float(robot_xyz[0]),
                     pick_y_mm=float(robot_xyz[1]),
                     pick_z_mm=float(robot_xyz[2]),
+                    pick_rz_deg=float(pick_rz),
                     place_x_mm=float(place["x_mm"]),
                     place_y_mm=float(place["y_mm"]),
                     place_down_mm=float(place["down_mm"]),
@@ -351,7 +379,13 @@ class TaskOrchestrator:
                         f"机器人抓放失败（{action_reply.status}）：{action_reply.message}"
                     )
                 target_result = {
-                    "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
+                    "pick": [
+                        target.pick_x_mm,
+                        target.pick_y_mm,
+                        target.pick_z_mm,
+                        target.pick_rz_deg,
+                    ],
+                    "place_rz_deg": 0.0,
                     "place_xy": [target.place_x_mm, target.place_y_mm],
                     "place_down_mm": target.place_down_mm,
                     "route": route_key,
@@ -393,6 +427,7 @@ class TaskOrchestrator:
         if not isinstance(orientation_raw, (list, tuple)) or len(orientation_raw) != 3:
             raise TaskError("robot.motion.orientation_mm_deg 必须包含 3 个姿态值")
         orientation = tuple(float(value) for value in orientation_raw)
+        orientation = (orientation[0], orientation[1], 0.0)
         place_xy = (float(place["x_mm"]), float(place["y_mm"]))
         try:
             inspection_pose = self.calibration.placement_inspection_pose(
@@ -407,6 +442,7 @@ class TaskOrchestrator:
             pick_x_mm=float(robot_xyz[0]),
             pick_y_mm=float(robot_xyz[1]),
             pick_z_mm=float(robot_xyz[2]),
+            pick_rz_deg=float(det.pick_rz_deg if det.pick_rz_deg is not None else 0.0),
             object_height_mm=float(object_height_mm),
             place_x_mm=place_xy[0],
             place_y_mm=place_xy[1],
@@ -569,7 +605,13 @@ class TaskOrchestrator:
             )
 
         return target, action_reply, {
-            "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
+            "pick": [
+                target.pick_x_mm,
+                target.pick_y_mm,
+                target.pick_z_mm,
+                target.pick_rz_deg,
+            ],
+            "place_rz_deg": 0.0,
             "object_height_mm": object_height_mm,
             "place_xy": [target.place_x_mm, target.place_y_mm],
             "inspection_pose": list(inspection_pose),
@@ -682,6 +724,9 @@ class TaskOrchestrator:
         tolerance = float(
             self.settings.get(f"tasks.{task_name}.stable_center_tolerance_px", 12)
         )
+        angle_tolerance = float(
+            self.settings.get(f"tasks.{task_name}.stable_angle_tolerance_deg", 5.0)
+        )
         deadline = min(
             time.monotonic() + timeout_s,
             self._deadline if self._deadline else float("inf"),
@@ -708,7 +753,9 @@ class TaskOrchestrator:
 
             empty_count = 0
             selected = self._select_candidate(task_name, detections, bundle)
-            if previous is not None and self._same_target(previous, selected, tolerance):
+            if previous is not None and self._same_target(
+                previous, selected, tolerance, angle_tolerance
+            ):
                 stable_count += 1
             else:
                 previous = selected
@@ -759,12 +806,24 @@ class TaskOrchestrator:
         return min(detections, key=lambda d: (d.pixel_center[0], d.pixel_center[1]))
 
     @staticmethod
-    def _same_target(a: Detection, b: Detection, tolerance: float) -> bool:
+    def _same_target(
+        a: Detection, b: Detection, tolerance: float, angle_tolerance: float = 5.0
+    ) -> bool:
         if a.class_name != b.class_name:
             return False
         dx = float(a.pixel_center[0] - b.pixel_center[0])
         dy = float(a.pixel_center[1] - b.pixel_center[1])
-        return math.hypot(dx, dy) <= tolerance
+        if math.hypot(dx, dy) > tolerance:
+            return False
+        if a.shape == "cylinder" and b.shape == "cylinder":
+            return True
+        if a.image_angle_deg is None or b.image_angle_deg is None:
+            return False
+        angle_delta = abs(
+            (float(a.image_angle_deg) - float(b.image_angle_deg) + 90.0) % 180.0
+            - 90.0
+        )
+        return angle_delta <= angle_tolerance
 
     def _resolve_place(self, task_name: str, det: Detection) -> tuple[str, Mapping[str, Any]]:
         prefix = (
@@ -826,6 +885,11 @@ class TaskOrchestrator:
                 "像素": f"{det.pixel_center[0]}, {det.pixel_center[1]}",
                 "深度(mm)": "-" if det.depth_mm is None else f"{det.depth_mm:.2f}",
                 "机器人XYZ(mm)": xyz_text,
+                "角度/RZ(°)": (
+                    "-"
+                    if det.pick_rz_deg is None
+                    else f"{det.image_angle_deg:+.1f} / {det.pick_rz_deg:+.1f}"
+                ),
                 "状态": det.status,
             },
         )

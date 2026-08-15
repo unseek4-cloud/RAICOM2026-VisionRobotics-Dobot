@@ -65,8 +65,8 @@ D435 ──彩色/对齐深度── YOLO/深度/EIH ── Python 主控 ──
 ```
 
 - 任务一：Dobot Vision Studio 负责 2D 测量与二维码/字符识别，结果通过 TCP 发给 Python。
-- 任务二：Python 使用 YOLO 识别类型/颜色，D435 提供深度，EIH 外参把相机坐标转换到机器人基坐标。
-- 任务三：Python 使用现场训练的 YOLO 模型识别顶部图片或类别，再结合深度与 EIH 得到抓取坐标。
+- 任务二：Python 使用 YOLO-OBB 识别类型、颜色和旋转轮廓，D435/EIH 同时换算抓取 XYZ 与最短 RZ。
+- 任务三：Python 使用现场训练的 YOLO-OBB 模型识别顶部图片或类别，再结合深度、EIH 和工件方向抓取。
 - 机器人控制：Python 不直接和 DobotStudio Pro 同时争夺机械臂控制权。Python 只向 DobotStudio Pro 中运行的 Lua 执行脚本发送抓放命令，Lua 独占实际运动和吸盘 IO。
 
 更完整的层次架构、状态机、异常处理和验收矩阵见 [系统设计说明](docs/系统设计说明.md)。
@@ -557,6 +557,7 @@ P_base = T_base_tip × T_tip_camera × P_camera
 - 任务二至少明确立方体/圆柱体以及现场要求的颜色路由。
 - 任务三应把“已知图案”和评分新增差异考虑进数据设计，不能只用一个硬编码类别字符串比较。
 - 所有工件同时出现，训练类别、任务过滤和 ROI 必须共同防止跨任务误抓。
+- 必须使用 OBB 四点标注和 OBB 基础权重；普通水平框没有可信角度，真机初始化会拒绝 `task=detect` 权重。
 
 ### 10.2 D435 拍照和数据集目录
 
@@ -580,10 +581,19 @@ python tools/capture_yolo_dataset.py
 
 界面固定使用 D435 的 RGB `1280×720@30 FPS` 彩色流。选择 Task 2 或 Task 3 后，
 按一次空格键（或点击“拍照”）保存一张 `.jpg` 到对应的 `photo` 目录。用 YOLO
-标注工具完成标注后，应把每张图片的同名 `.txt` 标签也放在 `photo` 中，例如
+标注工具完成四点旋转框后，应把每张图片的同名 `.txt` 标签也放在 `photo` 中，例如
 `task2_001.jpg` 对应 `task2_001.txt`。点击“一键划分当前任务”后，工具按固定随机
 种子把图片和已有标签复制到 `train : val : test = 70% : 20% : 10%`；原始
 `photo` 文件不会删除。少于 10 张图片或缺少标签时界面会要求再次确认。
+
+每个非空标签行必须是 Ultralytics OBB 的 9 列格式：
+
+```text
+class x1 y1 x2 y2 x3 y3 x4 y4
+```
+
+四个角点均按图像宽高归一化到 `[0,1]`。旧的 `class cx cy w h` 5 列标签必须
+重新标注；训练脚本会在启动前拒绝它，不能把水平框中心尺寸冒充工件方向。
 
 多台 RealSense 同时连接时，可指定 D435 序列号：
 
@@ -612,7 +622,7 @@ names:
   3: cylinder_blue
 ```
 
-类别只是示例，必须按现场道具重做。任务三的模板在 `datasets/task3/data.yaml`，默认示例为 `known_pattern` 和 `different_pattern`。项目训练入口强制要求 `--base` 指向已经存在的本地基础权重，不会主动联网下载。比赛前应把完整权重缓存到 `tools/offline_weights/yolo11n.pt`。
+类别只是示例，必须按现场道具重做。任务三的模板在 `datasets/task3/data.yaml`，默认示例为 `known_pattern` 和 `different_pattern`。项目训练入口强制要求 `--base` 指向已经存在的本地 OBB 基础权重，不会主动联网下载。比赛前应把完整权重缓存到 `tools/offline_weights/yolo11n-obb.pt`。
 
 任务二最简训练命令(新训练)：
 
@@ -621,7 +631,7 @@ names:
 python tools/train_yolo.py `
   --task task2 `
   --data datasets/task2/data.yaml `
-  --base tools/offline_weights/yolo11n.pt `
+  --base tools/offline_weights/yolo11n-obb.pt `
   --epochs 150 `
   --imgsz 640 `
   --batch 8 `
@@ -636,7 +646,7 @@ python tools/train_yolo.py `
 python tools/train_yolo.py `
   --task task3 `
   --data datasets/task3/data.yaml `
-  --base tools/offline_weights/yolo11n.pt `
+  --base tools/offline_weights/yolo11n-obb.pt `
   --epochs 150 `
   --imgsz 640 `
   --batch 8 `
@@ -653,6 +663,11 @@ python tools/train_yolo.py --task task3 --data datasets/task3/data.yaml --resume
 ```
 
 部署前必须用未参与训练的图像验证误检、漏检、相似图案、旋转、遮挡、反光和颜色变化，不能只确认训练集图片。
+
+运行时从 OBB 长轴取无向角，经当前 EIH 矩阵换算为机器人 XY 平面方向，并归一化到
+`[-90°,90°)`，因此抓取使用达到同一工件方向的最小 RZ。吸取后机械臂先垂直抬升，
+在安全高度保持 XYZ 原地转到 `RZ=0°`，然后才水平转运并放置。`RZ+` 按机器人
+XY 右手系为逆时针，`RZ-` 为顺时针；圆柱体没有有效朝向，固定使用 `RZ=0°`。
 
 ## 11. 真机启动与调试顺序
 

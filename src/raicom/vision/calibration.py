@@ -10,7 +10,7 @@ EIH 变换得到的物理点 Z。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, isfinite, sin
+from math import atan2, cos, degrees, hypot, isfinite, sin
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -373,6 +373,41 @@ class CalibrationModel:
         robot_xyz = (float(robot_x), float(robot_y), float(robot_z))
         self.validate_workspace(robot_xyz)
         return camera_xyz, robot_xyz
+
+    def image_axis_to_robot_rz_deg(
+        self,
+        center_pixel: tuple[int | float, int | float],
+        axis_pixel: tuple[int | float, int | float],
+        depth_mm: float,
+        intrinsics: CameraIntrinsics,
+    ) -> float:
+        """把图像中的 OBB 无向长轴换算为机器人 XY 平面的最短 RZ。
+
+        两个像素使用同一工件深度反投影，因此固定平移、吸盘 XY 补偿都不会污染
+        方向。返回值位于 ``[-90, 90)``：正值沿机器人 ``+X`` 到 ``+Y`` 逆时针，
+        负值顺时针，正好对应 RZ 的最短 180° 等价旋转。
+        """
+
+        first = self._camera_point(center_pixel, depth_mm, intrinsics)
+        second = self._camera_point(axis_pixel, depth_mm, intrinsics)
+        camera_delta = np.asarray(second, dtype=np.float64) - np.asarray(
+            first, dtype=np.float64
+        )
+        if self.simulation:
+            # 与 locate() 的模拟像素→机器人 XY 映射保持一致。
+            robot_dx = float(axis_pixel[0]) - float(center_pixel[0])
+            robot_dy = float(axis_pixel[1]) - float(center_pixel[1])
+        else:
+            if self.camera_to_tip_mm is None or self.base_to_tip_mm is None:
+                raise CalibrationError("真实模式 EIH 变换尚未加载")
+            transform = self.base_to_tip_mm @ self.camera_to_tip_mm
+            robot_delta = transform @ np.array((*camera_delta, 0.0), dtype=np.float64)
+            robot_dx, robot_dy = float(robot_delta[0]), float(robot_delta[1])
+        if not isfinite(robot_dx) or not isfinite(robot_dy) or hypot(robot_dx, robot_dy) <= 1e-6:
+            raise CalibrationError("OBB 长轴换算后的机器人 XY 方向无效")
+        angle = degrees(atan2(robot_dy, robot_dx))
+        normalized = (angle + 90.0) % 180.0 - 90.0
+        return 0.0 if abs(normalized) < 1e-9 else float(normalized)
 
     def object_height_mm(self, depth_mm: float) -> float:
         """仅用抓取台面的参考深度计算工件高度。

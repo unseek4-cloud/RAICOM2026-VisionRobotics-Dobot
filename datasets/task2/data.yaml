@@ -5,7 +5,7 @@ val: images/val
 test: images/test
 
 names:
-  0: cube_red
-  1: cube_blue
-  2: cylinder_red
-  3: cylinder_blue
+  0: blue
+  1: red
+  2: yellow
+  3: green

@@ -189,9 +189,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         lower = QtWidgets.QTabWidget()
         root.addWidget(lower, 2)
-        self.result_table = QtWidgets.QTableWidget(0, 8)
+        self.result_table = QtWidgets.QTableWidget(0, 9)
         self.result_table.setHorizontalHeaderLabels(
-            ["任务", "类别", "颜色", "置信度", "像素", "深度(mm)", "机器人XYZ(mm)", "状态"]
+            [
+                "任务",
+                "类别",
+                "颜色",
+                "置信度",
+                "像素",
+                "深度(mm)",
+                "机器人XYZ(mm)",
+                "角度/RZ(°)",
+                "状态",
+            ]
         )
         self.result_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.result_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -200,7 +210,7 @@ class MainWindow(QtWidgets.QMainWindow):
         header_view = self.result_table.horizontalHeader()
         header_view.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         header_view.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
-        header_view.setSectionResizeMode(7, QtWidgets.QHeaderView.Stretch)
+        header_view.setSectionResizeMode(8, QtWidgets.QHeaderView.Stretch)
         lower.addTab(self.result_table, "识别与抓放结果")
 
         self.log_text = QtWidgets.QPlainTextEdit()
@@ -372,7 +382,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(dict)
     def _add_result_row(self, row: dict) -> None:
-        labels = ["任务", "类别", "颜色", "置信度", "像素", "深度(mm)", "机器人XYZ(mm)", "状态"]
+        labels = [
+            "任务",
+            "类别",
+            "颜色",
+            "置信度",
+            "像素",
+            "深度(mm)",
+            "机器人XYZ(mm)",
+            "角度/RZ(°)",
+            "状态",
+        ]
         index = self.result_table.rowCount()
         self.result_table.insertRow(index)
         for column, key in enumerate(labels):

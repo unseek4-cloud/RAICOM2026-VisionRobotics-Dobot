@@ -180,6 +180,8 @@ class Settings:
             or not all(self._is_number(v) for v in orientation)
         ):
             issues.append("robot.motion.orientation_mm_deg 必须填写吸盘朝下姿态 [Rx,Ry,Rz]")
+        elif not math.isclose(float(orientation[2]), 0.0, abs_tol=1e-6):
+            issues.append("robot.motion.orientation_mm_deg[2] 必须为 0（工件放置回正基准）")
 
         for key in ("robot.user_coordinate_index", "robot.tool_coordinate_index"):
             value = self.get(key, None)
@@ -268,6 +270,18 @@ class Settings:
             value = self.get(key, None)
             if not self._is_number(value) or float(value) <= 0:
                 issues.append(f"{key} 必须填写大于 0 的有限数值")
+
+        for task_name in ("task2", "task3"):
+            angle_tolerance = self.get(
+                f"tasks.{task_name}.stable_angle_tolerance_deg", None
+            )
+            if (
+                not self._is_number(angle_tolerance)
+                or not 0 < float(angle_tolerance) <= 45
+            ):
+                issues.append(
+                    f"tasks.{task_name}.stable_angle_tolerance_deg 必须在 (0,45]"
+                )
 
         inspection_z = self.get("robot.motion.place_inspection_z_mm", None)
         if not self._is_number(inspection_z):

@@ -3,7 +3,7 @@
 
 界面固定采集 1280×720、30 FPS 的 RGB 彩色流。空格键或“拍照”按钮把 JPG
 原图保存到当前任务的 ``datasets/<task>/photo``。完成 YOLO 标注后，把与图片
-同名的 ``.txt`` 标签放在 ``photo`` 中，再用“一键划分”按 70%/20%/10% 复制到
+同名的 OBB 四点 ``.txt`` 标签放在 ``photo`` 中，再用“一键划分”按 70%/20%/10% 复制到
 train/val/test。原始照片和原始标签不会被移动或删除。
 """
 
@@ -390,7 +390,7 @@ if QtCore is not None:
             title = QtWidgets.QLabel("RealSense D435 · YOLO 数据采集")
             title.setObjectName("title")
             subtitle = QtWidgets.QLabel(
-                "RGB 1280×720 @ 30 FPS　|　空格键拍照　|　原图固定保存为 JPG"
+                "RGB 1280×720 @ 30 FPS　|　空格键拍照　|　请使用 OBB 四点旋转框标注"
             )
             subtitle.setObjectName("muted")
             root.addWidget(title)

@@ -229,6 +229,7 @@ def main() -> int:
             pick_x_mm=100.0,
             pick_y_mm=50.0,
             pick_z_mm=20.0,
+            pick_rz_deg=28.0,
             place_x_mm=250.0,
             place_y_mm=120.0,
             place_down_mm=50.0,
@@ -247,6 +248,8 @@ def main() -> int:
         pick_request = pick_requests[0]
         assert pick_request["approach_z"] == 60.0
         assert pick_request["transfer_z"] == 100.0
+        assert pick_request["pick_rz"] == 28.0
+        assert pick_request["place_rz"] == 0.0
         assert pick_request["place_z"] == 50.0
         assert pick_request["retract_z"] == 110.0
         assert pick_request["settle_ms"] == 300.0

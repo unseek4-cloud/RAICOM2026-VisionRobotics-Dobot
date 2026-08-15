@@ -104,6 +104,7 @@ class RuntimeFlowTests(unittest.TestCase):
             pick_x_mm=200.0,
             pick_y_mm=0.0,
             pick_z_mm=120.0,
+            pick_rz_deg=-37.0,
             object_height_mm=30.0,
             place_x_mm=250.0,
             place_y_mm=120.0,
@@ -122,6 +123,8 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertAlmostEqual(float(fields["approach_z"]), 160.0)
         self.assertAlmostEqual(float(fields["lift_z"]), 200.0)
         self.assertAlmostEqual(float(fields["inspection_z"]), 410.0)
+        self.assertAlmostEqual(float(fields["pick_rz"]), -37.0)
+        self.assertAlmostEqual(float(fields["inspection_rz"]), 0.0)
 
         second = bridge.place_from_inspection(target, first.command_id, 149.5)
         self.assertEqual(second.status, "done")
@@ -132,6 +135,7 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertIs(holding, False)
         self.assertAlmostEqual(float(fields["place_z"]), 149.5)
         self.assertAlmostEqual(float(fields["retract_z"]), 229.5)
+        self.assertAlmostEqual(float(fields["place_rz"]), 0.0)
         # Lua 同时把 retract_z 用作低位水平转运高度，避免前往无逆解的
         # (place_x, place_y, inspection_z) 高位终点。
         self.assertLess(float(fields["retract_z"]), float(fields["inspection_z"]))
@@ -150,6 +154,8 @@ class RuntimeFlowTests(unittest.TestCase):
             "x = job.pick_x, y = job.pick_y, z = job.inspection_z",
             source,
         )
+        self.assertIn("phase = \"straighten_rz\"", source)
+        self.assertIn("rz = job.inspection_rz", source)
 
     def test_go_photo_carries_workspace_contract(self) -> None:
         """拍照命令也必须让 Lua 核对 Python 当前使用的工作空间。"""
@@ -163,12 +169,10 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertEqual(phase, "at_photo")
         self.assertIsNone(holding)
         self.assertAlmostEqual(float(fields["photo_x"]), 160.0)
-        self.assertAlmostEqual(float(fields["workspace_x_min"]), 155.0)
-        self.assertAlmostEqual(float(fields["workspace_x_max"]), 290.0)
-        self.assertAlmostEqual(float(fields["workspace_y_min"]), -150.0)
-        self.assertAlmostEqual(float(fields["workspace_y_max"]), 135.0)
-        self.assertAlmostEqual(float(fields["workspace_z_min"]), 100.0)
-        self.assertAlmostEqual(float(fields["workspace_z_max"]), 435.0)
+        for axis in ("x", "y", "z"):
+            bounds = self.settings.get(f"robot.workspace_mm.{axis}")
+            self.assertAlmostEqual(float(fields[f"workspace_{axis}_min"]), float(bounds[0]))
+            self.assertAlmostEqual(float(fields[f"workspace_{axis}_max"]), float(bounds[1]))
 
 
 class ChineseGuiSmokeTests(unittest.TestCase):

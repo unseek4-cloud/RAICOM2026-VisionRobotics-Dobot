@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -25,7 +26,16 @@ _COLOR_WORDS: dict[str, tuple[str, ...]] = {
 
 _SHAPE_WORDS: dict[str, tuple[str, ...]] = {
     "cube": ("cube", "box", "square", "block", "立方", "方块", "正方"),
-    "cylinder": ("cylinder", "cyl", "round", "circle", "圆柱", "圆形"),
+    "cylinder": (
+        "cylinder",
+        "cyl",
+        "round",
+        "circle",
+        "circular",
+        "circula",
+        "圆柱",
+        "圆形",
+    ),
 }
 
 _DISPLAY_COLOR = {
@@ -71,6 +81,50 @@ def infer_color_from_name(class_name: str) -> str:
         if _contains_word(class_name, words):
             return color
     return "unknown"
+
+
+def normalize_axis_angle_deg(angle_deg: float) -> float:
+    """把无首尾方向的工件轴角度归一化为最短的 ``[-90, 90)``。"""
+
+    angle = float(angle_deg)
+    if not math.isfinite(angle):
+        raise DetectorError("工件角度不能是 NaN/Inf")
+    normalized = (angle + 90.0) % 180.0 - 90.0
+    return 0.0 if math.isclose(normalized, 0.0, abs_tol=1e-9) else normalized
+
+
+def oriented_box_axis(
+    points: Sequence[Sequence[float]],
+) -> tuple[tuple[float, float], tuple[float, float], float]:
+    """返回旋转框中心、长轴方向端点和图像中的逆时针角度。
+
+    OBB 对矩形只能确定 180° 无向轴，因此角度统一取最短等价角。图像 Y 轴向下，
+    计算显示角时取反 Y，使正角在画面中仍表示逆时针。
+    """
+
+    array = np.asarray(points, dtype=np.float64)
+    if array.shape != (4, 2) or not np.isfinite(array).all():
+        raise DetectorError("YOLO OBB 四点坐标必须是 4×2 有限数值")
+    center_array = np.mean(array, axis=0)
+    edges = np.roll(array, -1, axis=0) - array
+    lengths = np.linalg.norm(edges, axis=1)
+    edge = edges[int(np.argmax(lengths))]
+    length = float(np.linalg.norm(edge))
+    if length <= 1e-6:
+        raise DetectorError("YOLO OBB 长轴长度为 0")
+    direction = edge / length
+    # 轴没有箭头；固定到图像右半平面，消除同一工件逐帧 180° 跳变。
+    if direction[0] < 0 or (
+        math.isclose(float(direction[0]), 0.0, abs_tol=1e-9) and direction[1] < 0
+    ):
+        direction = -direction
+    half_length = length / 2.0
+    endpoint = center_array + direction * half_length
+    image_angle = normalize_axis_angle_deg(
+        math.degrees(math.atan2(-float(direction[1]), float(direction[0])))
+    )
+    center = (float(center_array[0]), float(center_array[1]))
+    return center, (float(endpoint[0]), float(endpoint[1])), image_angle
 
 
 def classify_color_hsv(image_bgr: np.ndarray, bbox: Sequence[int]) -> str:
@@ -166,7 +220,13 @@ def annotate_detections(
         x1, x2 = max(0, min(x1, width - 1)), max(0, min(x2, width - 1))
         y1, y2 = max(0, min(y1, height - 1)), max(0, min(y2, height - 1))
         color = (30, 210, 50) if detection.task == "task2" else (230, 150, 30)
-        cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
+        if detection.oriented_bbox is not None:
+            polygon = np.rint(np.asarray(detection.oriented_bbox)).astype(np.int32)
+            polygon[:, 0] = np.clip(polygon[:, 0], 0, width - 1)
+            polygon[:, 1] = np.clip(polygon[:, 1], 0, height - 1)
+            cv2.polylines(output, [polygon.reshape((-1, 1, 2))], True, color, 2)
+        else:
+            cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
         cv2.drawMarker(
             output,
             detection.pixel_center,
@@ -180,6 +240,8 @@ def annotate_detections(
             parts.append(_DISPLAY_COLOR.get(detection.color, detection.color))
             parts.append(_DISPLAY_SHAPE.get(detection.shape, detection.shape))
         parts.append(f"{detection.confidence:.2f}")
+        if detection.image_angle_deg is not None:
+            parts.append(f"angle={detection.image_angle_deg:+.1f}deg")
         labels.append((x1, max(0, y1 - 24), " / ".join(parts)))
 
     # Pillow 使用系统中文字体；找不到字体时仍绘制 ASCII 类别并记录警告。
@@ -249,8 +311,14 @@ class YoloDetector:
             self.model = YOLO(str(model_path))
         except Exception as exc:
             raise DetectorError(f"YOLO 模型加载失败 {model_path}：{exc}") from exc
+        model_task = str(getattr(self.model, "task", "")).strip().lower()
+        if model_task != "obb":
+            raise DetectorError(
+                f"{task} 权重是 {model_task or '未知'} 模型，不含可信旋转角；"
+                "请用四点 OBB 标签和 *-obb.pt 基础权重重新训练"
+            )
         self.names = getattr(self.model, "names", {})
-        _log(logger, "info", f"已加载 {task} 模型：{model_path.name}，设备={self.device}")
+        _log(logger, "info", f"已加载 {task} OBB 模型：{model_path.name}，设备={self.device}")
 
     def _allowed_class(self, class_name: str) -> bool:
         folded = class_name.casefold()
@@ -286,19 +354,25 @@ class YoloDetector:
         if not results:
             return []
         result = results[0]
-        boxes = getattr(result, "boxes", None)
+        boxes = getattr(result, "obb", None)
         if boxes is None:
-            return []
+            raise DetectorError("YOLO 推理结果不含 OBB；拒绝用水平框猜测机械臂 RZ")
         image_height, image_width = image_bgr.shape[:2]
         detections: list[Detection] = []
         for box in boxes:
             try:
                 class_id = int(box.cls[0].item())
                 confidence = float(box.conf[0].item())
-                coords = box.xyxy[0].detach().cpu().tolist()
-                x1, y1, x2, y2 = (int(round(float(value))) for value in coords)
+                points_array = np.asarray(
+                    box.xyxyxyxy[0].detach().cpu().tolist(), dtype=np.float64
+                ).reshape(4, 2)
+                center_float, _, image_angle = oriented_box_axis(points_array)
+                x1 = int(math.floor(float(np.min(points_array[:, 0]))))
+                y1 = int(math.floor(float(np.min(points_array[:, 1]))))
+                x2 = int(math.ceil(float(np.max(points_array[:, 0]))))
+                y2 = int(math.ceil(float(np.max(points_array[:, 1]))))
             except Exception as exc:
-                _log(self.logger, "warning", f"忽略无法解析的 YOLO 检测框：{exc}")
+                _log(self.logger, "warning", f"忽略无法解析的 YOLO OBB 检测框：{exc}")
                 continue
             class_name = self._class_name(class_id, result)
             if not self._allowed_class(class_name):
@@ -309,11 +383,18 @@ class YoloDetector:
             y2 = max(0, min(y2, image_height - 1))
             if x2 <= x1 or y2 <= y1:
                 continue
-            center = (int(round((x1 + x2) / 2)), int(round((y1 + y2) / 2)))
+            center = (
+                max(0, min(int(round(center_float[0])), image_width - 1)),
+                max(0, min(int(round(center_float[1])), image_height - 1)),
+            )
+            oriented_bbox = tuple(
+                (float(point[0]), float(point[1])) for point in points_array
+            )
             color = infer_color_from_name(class_name)
             if self.task == "task2" and color == "unknown" and self.use_hsv:
                 color = classify_color_hsv(image_bgr, (x1, y1, x2, y2))
-            shape = infer_shape(class_name) if self.task == "task2" else "unknown"
+            # 任务三类别名若也包含 cube/cylinder，保留形状信息；圆柱无有效 RZ。
+            shape = infer_shape(class_name)
             detection = Detection(
                 task=self.task,
                 object_id=f"{self.task}-{class_id}-{center[0]}-{center[1]}",
@@ -323,7 +404,9 @@ class YoloDetector:
                 color=color,
                 shape=shape,
                 pixel_center=center,
-                extra={"class_id": class_id},
+                oriented_bbox=oriented_bbox,
+                image_angle_deg=image_angle,
+                extra={"class_id": class_id, "detector_task": "obb"},
             )
             detection.route_key = _task_route(self.settings, self.task, detection)
             detections.append(detection)
@@ -348,4 +431,6 @@ __all__ = [
     "classify_color_hsv",
     "infer_color_from_name",
     "infer_shape",
+    "normalize_axis_angle_deg",
+    "oriented_box_axis",
 ]

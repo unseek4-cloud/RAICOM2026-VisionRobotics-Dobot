@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -22,7 +23,11 @@ from raicom.vision.realsense_camera import (
     FrameBundle,
     robust_depth_from_bundle,
 )
-from raicom.vision.yolo_detector import DetectorError, annotate_detections
+from raicom.vision.yolo_detector import (
+    DetectorError,
+    annotate_detections,
+    oriented_box_axis,
+)
 
 
 def _log(logger: Any, level: str, message: str) -> None:
@@ -46,6 +51,32 @@ class SimulationObject:
     shape: str
     route_key: str
     confidence: float = 0.96
+    angle_deg: float = 0.0
+
+    def oriented_bbox(self) -> tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ]:
+        """生成位于轴对齐包围框内的模拟旋转矩形。"""
+
+        x1, y1, x2, y2 = self.bbox
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        width = max(2.0, (x2 - x1) * 0.72)
+        height = max(2.0, (y2 - y1) * 0.48)
+        angle = math.radians(self.angle_deg)
+        ux = (math.cos(angle), math.sin(angle))
+        uy = (-math.sin(angle), math.cos(angle))
+        result: list[tuple[float, float]] = []
+        for along, across in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+            result.append(
+                (
+                    cx + along * width * ux[0] / 2.0 + across * height * uy[0] / 2.0,
+                    cy + along * width * ux[1] / 2.0 + across * height * uy[1] / 2.0,
+                )
+            )
+        return result[0], result[1], result[2], result[3]
 
 
 class SimulationWorld:
@@ -101,6 +132,7 @@ class SimulationWorld:
                 "cube",
                 "red",
                 0.98,
+                32.0,
             ),
             SimulationObject(
                 "T2-BLUE-CYLINDER",
@@ -112,6 +144,7 @@ class SimulationWorld:
                 "cylinder",
                 "blue",
                 0.97,
+                0.0,
             ),
             SimulationObject(
                 "T3-MATCH",
@@ -123,6 +156,7 @@ class SimulationWorld:
                 "cube",
                 "match",
                 0.96,
+                -47.0,
             ),
             SimulationObject(
                 "T3-NOT-MATCH",
@@ -134,6 +168,7 @@ class SimulationWorld:
                 "cube",
                 "not_match",
                 0.95,
+                18.0,
             ),
         )
 
@@ -222,7 +257,14 @@ class SimulationWorld:
                 (yy - (local_h - 1) / 2.0) / ry
             ) ** 2 <= 1.0
         else:
-            mask[:, :] = True
+            try:
+                import cv2
+            except ImportError as exc:  # pragma: no cover
+                raise CameraError("模拟旋转工件生成需要 OpenCV（cv2）") from exc
+            polygon = np.rint(np.asarray(obj.oriented_bbox())).astype(np.int32)
+            polygon[:, 0] -= x1
+            polygon[:, 1] -= y1
+            cv2.fillConvexPoly(mask.view(np.uint8), polygon, 1)
         return slice(y1, y2), slice(x1, x2), mask
 
     def render(self) -> FrameBundle:
@@ -286,7 +328,8 @@ class SimulationWorld:
                     2,
                 )
             else:
-                cv2.rectangle(color, (x1, y1), (x2, y2), (30, 30, 30), 2)
+                polygon = np.rint(np.asarray(obj.oriented_bbox())).astype(np.int32)
+                cv2.polylines(color, [polygon.reshape((-1, 1, 2))], True, (30, 30, 30), 2)
             if obj.task == "task3":
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                 radius = max(8, min(x2 - x1, y2 - y1) // 4)
@@ -430,6 +473,8 @@ class MockDetector:
         detections: list[Detection] = []
         for obj in self.world.objects(self.task):
             x1, y1, x2, y2 = obj.bbox
+            oriented_bbox = obj.oriented_bbox()
+            _, _, image_angle = oriented_box_axis(oriented_bbox)
             detection = Detection(
                 task=obj.task,
                 object_id=obj.object_id,
@@ -439,6 +484,8 @@ class MockDetector:
                 color=obj.color,
                 shape=obj.shape,
                 pixel_center=((x1 + x2) // 2, (y1 + y2) // 2),
+                oriented_bbox=oriented_bbox,
+                image_angle_deg=image_angle,
                 route_key=obj.route_key,
                 extra={"simulation": True, "height_mm": obj.height_mm},
             )

@@ -26,6 +26,13 @@ class CalibrationLike(Protocol):
     def locate(self, pixel: tuple[int, int], depth_mm: float, intrinsics: Any) -> tuple[
         tuple[float, float, float], tuple[float, float, float]
     ]: ...
+    def image_axis_to_robot_rz_deg(
+        self,
+        center_pixel: tuple[int | float, int | float],
+        axis_pixel: tuple[int | float, int | float],
+        depth_mm: float,
+        intrinsics: Any,
+    ) -> float: ...
     def object_height_mm(self, depth_mm: float) -> float: ...
     def placement_inspection_pose(
         self,

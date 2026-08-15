@@ -29,6 +29,14 @@ class Detection:
     color: str = "未知"
     shape: str = "未知"
     pixel_center: tuple[int, int] = (0, 0)
+    oriented_bbox: tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ] | None = None
+    image_angle_deg: float | None = None
+    pick_rz_deg: float | None = None
     depth_mm: float | None = None
     camera_xyz_mm: tuple[float, float, float] | None = None
     robot_xyz_mm: tuple[float, float, float] | None = None
@@ -60,6 +68,7 @@ class PickTarget:
     pick_x_mm: float
     pick_y_mm: float
     pick_z_mm: float
+    pick_rz_deg: float
     place_x_mm: float
     place_y_mm: float
     place_down_mm: float
@@ -75,6 +84,7 @@ class StackPlaceTarget:
     pick_x_mm: float
     pick_y_mm: float
     pick_z_mm: float
+    pick_rz_deg: float
     object_height_mm: float
     place_x_mm: float
     place_y_mm: float
