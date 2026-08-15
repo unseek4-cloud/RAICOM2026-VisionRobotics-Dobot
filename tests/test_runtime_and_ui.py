@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from raicom.config import Settings
+from raicom.config import Settings, SettingsError
 from raicom.events import EventBus
 from raicom.robot.lua_bridge import LuaBridgeServer
 from raicom.runtime import SystemRuntime
@@ -73,6 +74,50 @@ class RuntimeFlowTests(unittest.TestCase):
             self.assertAlmostEqual(float(visual_releases[1]["place_z"]), 163.5)
         finally:
             runtime.stop()
+
+    def test_task3_respects_configurable_sorting_limit(self) -> None:
+        """任务三达到 settings 上限后应正常结束并保留其余同任务目标。"""
+
+        data = copy.deepcopy(self.settings.as_dict())
+        data["tasks"]["task3"]["max_objects"] = 1
+        settings = Settings(data, self.settings.config_path)
+        runtime = SystemRuntime(settings, real_mode=False)
+        try:
+            self.assertTrue(runtime.start())
+            world = runtime.simulation_world
+            self.assertIsNotNone(world)
+            self.assertTrue(runtime.orchestrator.run("task3"))
+            self.assertEqual(len(world.objects("task2")), 2)
+            self.assertEqual(len(world.objects("task3")), 1)
+            self.assertAlmostEqual(world.placement_stack_height_mm(250.0, 120.0), 30.0)
+        finally:
+            runtime.stop()
+
+    def test_task2_can_finish_below_configured_limit(self) -> None:
+        """目标少于上限时，连续空帧确认后按实际完成数结束。"""
+
+        data = copy.deepcopy(self.settings.as_dict())
+        data["tasks"]["task2"]["max_objects"] = 3
+        settings = Settings(data, self.settings.config_path)
+        runtime = SystemRuntime(settings, real_mode=False)
+        try:
+            self.assertTrue(runtime.start())
+            world = runtime.simulation_world
+            self.assertIsNotNone(world)
+            self.assertTrue(runtime.orchestrator.run("task2"))
+            self.assertEqual(len(world.objects("task2")), 0)
+            self.assertEqual(len(world.objects("task3")), 2)
+        finally:
+            runtime.stop()
+
+    def test_sorting_limit_must_be_positive_integer(self) -> None:
+        for invalid in (0, -1, 1.5, True, "2"):
+            with self.subTest(invalid=invalid):
+                data = copy.deepcopy(self.settings.as_dict())
+                data["tasks"]["task3"]["max_objects"] = invalid
+                settings = Settings(data, self.settings.config_path)
+                with self.assertRaisesRegex(SettingsError, "max_objects"):
+                    settings.task_max_objects("task3")
 
     def test_dvs_quality_guards(self) -> None:
         """失败标记、错任务、错误版本和非有限值不得完成任务一。"""

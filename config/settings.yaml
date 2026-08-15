@@ -184,8 +184,7 @@ tasks:
 
   task2:
     enabled: true
-    expected_objects: 2
-    max_objects: 2
+    max_objects: 2                    # 单次运行最多分拣几件；现场可改为任意 >=1 的整数
     candidate_order: "left_to_right" # 可选：left_to_right / confidence / nearest_center
     route_by: "color"               # color / shape / class
     detect_timeout_s: 20.0
@@ -196,9 +195,7 @@ tasks:
 
   task3:
     enabled: true
-    # 规则说明原有 1 个，评分验证额外增加 1 个，且全部工件全程同时出现，因此默认 2。
-    expected_objects: 2
-    max_objects: 2
+    max_objects: 2                    # 与任务二独立配置，达到上限即结束本任务
     candidate_order: "left_to_right"
     route_by: "match_or_class"
     detect_timeout_s: 20.0

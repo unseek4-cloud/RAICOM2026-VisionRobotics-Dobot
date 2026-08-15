@@ -82,6 +82,17 @@ class Settings:
     def as_dict(self) -> dict[str, Any]:
         return dict(self._data)
 
+    def task_max_objects(self, task_name: str) -> int:
+        """返回任务二/三单次运行允许分拣的最大工件数。"""
+
+        if task_name not in {"task2", "task3"}:
+            raise SettingsError(f"不支持配置分拣数量的任务：{task_name}")
+        key = f"tasks.{task_name}.max_objects"
+        value = self.get(key, None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise SettingsError(f"{key} 必须是不小于 1 的整数")
+        return value
+
     def _validate_structure(self) -> None:
         required_sections = (
             "application",
@@ -96,6 +107,9 @@ class Settings:
         for key in required_sections:
             if not isinstance(self.get(key, None), Mapping):
                 raise SettingsError(f"缺少配置节或类型错误：{key}")
+
+        for task_name in ("task2", "task3"):
+            self.task_max_objects(task_name)
 
         try:
             timeout = float(self.get("application.competition_timeout_s", 600))

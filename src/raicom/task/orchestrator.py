@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..config import Settings, SettingsError
+from ..config import Settings
 from ..events import EventBus
 from ..interfaces import CalibrationLike, CameraLike, DVSLike, DetectorLike, RobotLike
 from ..result_store import ResultStore
@@ -268,26 +268,17 @@ class TaskOrchestrator:
             raise TaskError(f"机械臂未能到达固定拍照位：{reason}")
         self.camera.flush()
 
-        expected = int(self.settings.get(f"tasks.{task_name}.expected_objects"))
-        maximum = int(self.settings.get(f"tasks.{task_name}.max_objects", expected))
-        if maximum < expected or maximum < 1:
-            raise SettingsError(f"tasks.{task_name}.max_objects 必须 >= expected_objects >= 1")
+        maximum = self.settings.task_max_objects(task_name)
 
         completed = 0
-        # 达到 expected/max 后仍再做一次“当前任务无目标”确认。这样既满足
-        # “抓取直到没有工件”，又能在模型意外检测出额外目标时安全失败，而不是
-        # 悄悄把未知件留在桌面或无限抓取。
-        while True:
+        # 每次抓放后都回到拍照位重新识别；现场目标少于上限时以连续空帧结束，
+        # 达到配置上限时则立即正常结束，不再把桌面上的额外工件当成数量错误。
+        while completed < maximum:
             self._check_continue()
             candidate = self._acquire_stable_candidate(task_name)
             if candidate is None:
                 self.log.info("%s 已连续多帧无目标", task_name)
                 break
-            if completed >= maximum:
-                raise TaskError(
-                    f"{task_name} 已达到最大允许 {maximum} 件，但仍检测到目标；"
-                    "请核对现场数量、类别过滤和模型误检"
-                )
             det, bundle = candidate
 
             try:
@@ -408,9 +399,11 @@ class TaskOrchestrator:
                 self.simulation_world.remove(det.object_id)
             self.camera.flush()
 
-        if completed != expected:
-            raise TaskError(f"{task_name} 完成 {completed} 件，现场预期为 {expected} 件")
-        self.log.info("%s 完成，共 %d 件", task_name, completed)
+        if completed == 0:
+            raise TaskError(f"{task_name} 未检测到可分拣工件")
+        if completed == maximum:
+            self.log.info("%s 已达到配置的分拣上限 %d 件", task_name, maximum)
+        self.log.info("%s 完成，共 %d 件（配置上限 %d 件）", task_name, completed, maximum)
 
     def _execute_task3_dynamic_place(
         self,

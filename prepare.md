@@ -271,8 +271,7 @@ Test-NetConnection $pythonPcIp -Port 2006
 |---|---|
 | `tasks.task1.enabled` | 正式比赛保持 `true` |
 | `tasks.task1.robot_action` | 保持 `none`；公布赛题只明确任务一识别和输出，现场任务书若新增机械臂动作，必须再修改程序 |
-| `expected_objects` | 现场应该成功处理的工件数 |
-| `max_objects` | 允许处理的最大工件数，必须大于等于 `expected_objects` |
+| `max_objects` | 本任务单次运行最多分拣的工件数，必须是不小于 1 的整数；任务二、三分别设置 |
 | `candidate_order` | `left_to_right`、`confidence` 或 `nearest_center`，按现场任务内顺序要求填 |
 | `route_by` | 按现场分类规则填 `color/shape/class/match_or_class` |
 | `detect_timeout_s` | 本任务获取稳定检测的最长时间 |
@@ -280,7 +279,7 @@ Test-NetConnection $pythonPcIp -Port 2006
 | `stable_frames` | 连续多少帧匹配同一目标才进入深度计算 |
 | `stable_center_tolerance_px` | 多帧目标中心可允许的像素偏差 |
 
-公布规则下任务二和任务三默认各2件，但必须以比赛当天任务书为准。所有工件全程同时出现，因此模型关键词和类别必须能防止任务二误抓任务三工件，反之亦然。
+公布规则下任务二和任务三默认各2件，但必须以比赛当天任务书为准，分别修改各自的 `max_objects`。达到上限即结束；实际目标少于上限时，连续空帧确认后按实际数量结束。所有工件全程同时出现，因此模型关键词和类别必须能防止任务二误抓任务三工件，反之亦然。
 
 ## 4. 第二处：填写 DobotStudio Pro Lua 脚本
 
@@ -496,7 +495,6 @@ python main.py --real
 ```yaml
 tasks:
   task2:
-    expected_objects: 1
     max_objects: 1
 ```
 
@@ -505,7 +503,7 @@ tasks:
 5. 一只手保持可以随时按实体急停，人员不得进入运动区。
 6. 确认动作实际顺序：回拍照位→重新取帧→识别→下降吸取→原XY抬升→恒Z水平转运→下降→释放→回撤→回拍照位。
 7. 确认释放后程序重新取帧，而不是继续使用抓取前的旧图。
-8. 测试完成后把 `expected_objects/max_objects` 恢复为现场正式数量。
+8. 测试完成后把 `max_objects` 恢复为现场正式上限。
 
 如果第一件的 Z 还没有用已知高度量块验证，不得直接增加 `press_down_mm`。
 
@@ -518,7 +516,7 @@ tasks:
 
 每个任务都必须验证：
 
-- 实际数量与 `expected_objects` 一致；
+- 实际分拣数不超过 `max_objects`，达到上限后不再继续抓取；
 - 只识别本任务工件，不误抓另一任务工件；
 - 类别、颜色、置信度、深度和机械臂坐标在 UI 中正确显示；
 - 路由键命中正确落料点；
@@ -640,7 +638,7 @@ Get-NetTCPConnection -LocalPort 6001,2006 -ErrorAction SilentlyContinue |
 ### 9.2 现场任务书
 
 - [ ] 任务一测量字段、单位、容差、二维码和字符要求已同步到 DVS 和 `required_fields`。
-- [ ] 任务二/三的实际数量已写入 `expected_objects/max_objects`。
+- [ ] 任务二/三的分拣数量上限已分别写入各自的 `max_objects`。
 - [ ] 类别名、颜色、形状、已知图案和任务过滤已确认。
 - [ ] 任务内选择顺序和分类路由已确认。
 - [ ] 所有实际路由都有已示教的落料点。

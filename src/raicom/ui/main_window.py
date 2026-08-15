@@ -408,11 +408,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_progress()
 
     def _refresh_progress(self) -> None:
-        expected2 = int(self.settings.get("tasks.task2.expected_objects", 0))
-        expected3 = int(self.settings.get("tasks.task3.expected_objects", 0))
+        maximum2 = self.settings.task_max_objects("task2")
+        maximum3 = self.settings.task_max_objects("task3")
         self.progress_label.setText(
-            f"抓放进度：任务二 {self._completed_counts['任务二']}/{expected2}  ·  "
-            f"任务三 {self._completed_counts['任务三']}/{expected3}  ·  "
+            f"抓放进度：任务二 {self._completed_counts['任务二']}/{maximum2}（上限）  ·  "
+            f"任务三 {self._completed_counts['任务三']}/{maximum3}（上限）  ·  "
             f"异常 {self._alarm_count}"
         )
 
