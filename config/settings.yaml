@@ -37,7 +37,8 @@ dvs:
   fallback_encoding: "gb18030"
   terminator: "\n"
   delimiter: ","
-  trigger_text: "TRIGGER\n"
+  # 启动任务一（单独运行或全流程）时，Python 原样向已连接的 DVS 发送这两个字节。
+  trigger_text: "ok"
   task1_timeout_s: 30.0
   expected_results: 1
   # 现场任务书若明确必须有 a/b/c/二维码/字符等字段，在此填写；空列表表示只要收到

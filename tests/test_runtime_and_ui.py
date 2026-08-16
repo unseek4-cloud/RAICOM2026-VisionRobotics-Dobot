@@ -9,6 +9,7 @@ import math
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +60,11 @@ class RuntimeFlowTests(unittest.TestCase):
             self.assertIsNotNone(world)
             self.assertEqual(len(world.objects()), 4)
             self.assertIsNotNone(runtime.orchestrator)
-            self.assertTrue(runtime.orchestrator.run("all"))
+            with patch.object(
+                runtime.dvs, "trigger", wraps=runtime.dvs.trigger
+            ) as trigger:
+                self.assertTrue(runtime.orchestrator.run("all"))
+            trigger.assert_called_once_with()
             self.assertEqual(len(world.objects()), 0)
             # 两件任务三工件放在同一 XY：首件看到独立的放置台面 Z=90，
             # 第二件必须看到首件 30 mm 高的顶面，而不是复用抓取台面 Z=100。
@@ -72,6 +77,20 @@ class RuntimeFlowTests(unittest.TestCase):
             self.assertEqual(len(visual_releases), 2)
             self.assertAlmostEqual(float(visual_releases[0]["place_z"]), 119.5)
             self.assertAlmostEqual(float(visual_releases[1]["place_z"]), 163.5)
+        finally:
+            runtime.stop()
+
+    def test_standalone_task1_sends_trigger(self) -> None:
+        """单独运行任务一也必须先触发 DVS，再接收任务结果。"""
+        runtime = SystemRuntime(self.settings, real_mode=False)
+        try:
+            self.assertTrue(runtime.start())
+            self.assertIsNotNone(runtime.orchestrator)
+            with patch.object(
+                runtime.dvs, "trigger", wraps=runtime.dvs.trigger
+            ) as trigger:
+                self.assertTrue(runtime.orchestrator.run("task1"))
+            trigger.assert_called_once_with()
         finally:
             runtime.stop()
 

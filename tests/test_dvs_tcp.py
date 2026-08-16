@@ -71,6 +71,37 @@ class DVSMessageParsingTests(unittest.TestCase):
 
 
 class DVSTCPStreamTests(unittest.TestCase):
+    def test_task1_ok_trigger_and_result_round_trip(self) -> None:
+        """任务一开始时发送原始 ``ok``，随后接收 DVS 返回的换行结果。"""
+        receiver = DVSReceiver(_receiver_settings(_unused_local_port()))
+        client: socket.socket | None = None
+        try:
+            receiver.start()
+            client = socket.create_connection(("127.0.0.1", receiver.port), timeout=2)
+            client.settimeout(2)
+
+            deadline = time.monotonic() + 2.0
+            while not receiver.is_connected() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(receiver.is_connected())
+
+            self.assertTrue(receiver.trigger())
+            self.assertEqual(client.recv(16), b"ok")
+
+            client.sendall(
+                b'{"version":1,"seq":1,"task":"task1","ok":true,"a":72.3}\n'
+            )
+            result = receiver.wait_for_result(timeout=2)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result["task"], "task1")
+            self.assertIs(result["ok"], True)
+            self.assertAlmostEqual(result["a"], 72.3)
+        finally:
+            if client is not None:
+                client.close()
+            receiver.stop()
+
     def test_fragmentation_and_sticky_packets(self) -> None:
         """一条消息拆开发送，后续两条合并发送，且在中文多字节中间切包。"""
         receiver = DVSReceiver(_receiver_settings(_unused_local_port()))

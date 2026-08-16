@@ -182,7 +182,7 @@ class DVSReceiver:
         self.terminator = str(settings.get("dvs.terminator", "\n")).encode("ascii")
         self.delimiter = str(settings.get("dvs.delimiter", ","))
         self.default_timeout = float(settings.get("dvs.task1_timeout_s", 30.0))
-        self.trigger_text = str(settings.get("dvs.trigger_text", "TRIGGER\n"))
+        self.trigger_text = str(settings.get("dvs.trigger_text", "ok"))
         if not self.terminator:
             raise DVSError("dvs.terminator 不能为空")
         if not 1024 <= self.port <= 65535:

@@ -143,7 +143,7 @@ class TaskOrchestrator:
     def run_task1(self) -> None:
         self._set_state(TaskState.TASK1, "等待 Dobot Vision Studio 识别结果")
         self._check_continue()
-        # 丢弃启动任务前残留的旧结果。DVS 应在收到本次 TRIGGER 后重新输出；
+        # 丢弃启动任务前残留的旧结果。DVS 应在收到本次 ``ok`` 后重新输出；
         # 这样不会把上一次调试/断线重发的数据误计为本轮评分结果。
         clear_results = getattr(self.dvs, "clear_results", None)
         if callable(clear_results):
@@ -151,10 +151,10 @@ class TaskOrchestrator:
         try:
             triggered = self.dvs.trigger()
         except Exception as exc:
-            triggered = False
-            self.log.warning("DVS 软触发发送失败，将继续等待主动输出：%s", exc)
-        if triggered:
-            self.log.info("已向 Dobot Vision Studio 发送软触发")
+            raise TaskError(f"向 DVS 发送任务一触发字符串 ok 失败：{exc}") from exc
+        if not triggered:
+            raise TaskError("未能向 DVS 发送任务一触发字符串 ok；请先确认 DVS 已连接")
+        self.log.info("已向 Dobot Vision Studio 发送任务一触发字符串：ok")
 
         timeout = float(self.settings.get("dvs.task1_timeout_s", 30.0))
         expected_messages = max(1, int(self.settings.get("dvs.expected_results", 1)))

@@ -234,7 +234,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 | `fallback_encoding` | 兼容部分 DVS 环境的 `gb18030` |
 | `terminator` | 每条结果以 `\n` 结束 |
 | `delimiter` | KV/CSV 兼容格式分隔符，默认逗号 |
-| `trigger_text` | 若 DVS 流程配置为等待主控触发，可使用的触发文本 |
+| `trigger_text` | 任务一开始时 Python 向 DVS 原样发送的触发文本，固定为 `ok` |
 | `task1_timeout_s` | 任务一等待完整结果的超时 |
 | `expected_results` | 现场任务书规定需返回多件结果时修改 |
 | `required_fields` | 现场必须出现的字段名，如 `a`、`b`、`c`、`qr` |
@@ -332,7 +332,7 @@ Python 为 TCP 服务端，DobotStudio Pro Lua 为客户端。
 
 TCP 没有“消息边界”。一次 `recv` 可能只有半条消息，也可能包含多条消息。接收器按换行累积拆帧，断线时丢弃残留半包，单行超过 `65536` 字节直接拒绝。
 
-每次开始任务一前，主控会清除上轮未消费结果再触发/等待新结果。正式 JSON 应满足 `version=1`、`task=task1`、`ok=true`，数字必须为有限值，并用外部 `seq` 去重；否则只显示错误而不计任务完成。
+每次开始任务一（单独运行或全流程）时，主控会先清除上轮未消费结果，再向已连接的 DVS 原样发送 UTF-8 字符串 `ok`（不附加换行）。DVS 收到 `ok` 后开始采集和计算，并把本轮结果发送回 Python；若触发未发送成功，任务会立即报错，不会在未触发的情况下空等。正式 JSON 应满足 `version=1`、`task=task1`、`ok=true`，数字必须为有限值，并用外部 `seq` 去重；否则只显示错误而不计任务完成。
 
 ### 7.2 推荐 JSON 单行格式
 

@@ -51,7 +51,7 @@
 | `network.dvs.port` | 默认 `6001`，可修改为未占用端口；DVS 工程中必须填相同端口 |
 | `dvs.encoding` | DVS 能发 UTF-8 时保持 `utf-8` |
 | `dvs.fallback_encoding` | DVS 只能发中文本地编码时保持 `gb18030` 兜底 |
-| `dvs.trigger_text` | Python 向 DVS 发的软触发文本；必须与 DVS 工程约定一致 |
+| `dvs.trigger_text` | 保持 `ok`；任务一开始时 Python 会向 DVS 原样发送，不附加换行 |
 | `dvs.task1_timeout_s` | 任务一最长等待时间，要大于 DVS 完整处理耗时 |
 | `dvs.expected_results` | 现场任务一需要接收几条结果；一条结果包含全部字段时填 `1` |
 | `dvs.required_fields` | 按现场任务书填写必须字段，例如 `["a", "b", "c", "qr", "text"]` |
@@ -333,7 +333,7 @@ Lua 还有两个独有安全参数：
 3. DVS 目标端口填 `network.dvs.port`，默认6001。
 4. 优先使用 UTF-8。
 5. 每条结果必须以 `\n` 结束。
-6. 流程应支持收到 `TRIGGER\n` 后重新采集和计算，然后发送本轮新结果。
+6. 流程应等待收到 UTF-8 字符串 `ok`（无换行）；收到后开始采集和计算，然后发送本轮新结果。
 7. 推荐发送 `version/task/ok/seq`，便于拒绝错任务、失败结果和重复报文。
 8. 量纲字段必须统一，尺寸推荐明确发送 `unit: "mm"`。
 
