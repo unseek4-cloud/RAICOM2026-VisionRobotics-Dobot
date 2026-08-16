@@ -47,8 +47,8 @@ dvs:
 
 camera:
   serial: null                     # 多台 RealSense 时填写 D435 序列号
-  width: 640
-  height: 480
+  width: 1280
+  height: 720
   fps: 30
   align_depth_to_color: true
   warmup_frames: 30
@@ -65,7 +65,7 @@ yolo:
   # 抓取角度只接受 Ultralytics OBB 权重；普通 detect 水平框会在初始化时被拒绝。
   device: "cuda:0"                # CUDA 不可用时程序自动回退 CPU 并报警
   image_size: 640
-  confidence: 0.5
+  confidence: 0.85
   iou: 0.45
   max_detections: 20
   use_hsv_color_fallback: true
@@ -108,7 +108,7 @@ calibration:
 
   # 用户指定的计算式：抓取Z = 台面机器人Z + (空台深度 - 工件中心深度)。
   # 正的 press_down_mm 会让吸盘在计算表面基础上再向下压一点；初次验证保持 0。
-  press_down_mm: 0.6
+  press_down_mm: 1.0
   xy_offset_mm: [2.5, 0]  #[5.0, 12.8] [6.0, 5.0]  # ★现场必填：相机光心到吸盘中心的 XY 偏移，单位 mm。正值表示相机在吸盘前方/右方。
   min_object_height_mm: 0.0
   max_object_height_mm: 120.0
