@@ -107,7 +107,7 @@ calibration:
 
   # 用户指定的计算式：抓取Z = 台面机器人Z + (空台深度 - 工件中心深度)。
   # 正的 press_down_mm 会让吸盘在计算表面基础上再向下压一点；初次验证保持 0。
-  press_down_mm: 0.5
+  press_down_mm: 0.6
   xy_offset_mm: [2.5, 0]  #[5.0, 12.8] [6.0, 5.0]  # ★现场必填：相机光心到吸盘中心的 XY 偏移，单位 mm。正值表示相机在吸盘前方/右方。
   min_object_height_mm: 0.0
   max_object_height_mm: 120.0
@@ -184,7 +184,9 @@ tasks:
 
   task2:
     enabled: true
-    max_objects: 2                    # 单次运行最多分拣几件；现场可改为任意 >=1 的整数
+    # UI 可直接拖拽调整；归一化格式 [左, 上, 右, 下]，仅中心点在框内的目标参与识别。
+    recognition_region: [0.0, 0.0, 1.0, 1.0]
+    max_objects: 5                    # 单次运行最多分拣几件；现场可改为任意 >=1 的整数
     candidate_order: "left_to_right" # 可选：left_to_right / confidence / nearest_center
     route_by: "color"               # color / shape / class
     detect_timeout_s: 20.0
@@ -195,7 +197,8 @@ tasks:
 
   task3:
     enabled: true
-    max_objects: 2                    # 与任务二独立配置，达到上限即结束本任务
+    recognition_region: [0.0, 0.0, 1.0, 1.0]
+    max_objects: 5                    # 与任务二独立配置，达到上限即结束本任务
     candidate_order: "left_to_right"
     route_by: "match_or_class"
     detect_timeout_s: 20.0

@@ -237,6 +237,13 @@ class ChineseGuiSmokeTests(unittest.TestCase):
             self.assertIn("睿抗", window.windowTitle())
             self.assertEqual(window.btn_all.text(), "全流程自动运行")
             self.assertIn("非物理急停", window.btn_stop.text())
+            self.assertEqual(window.region_task.count(), 2)
+            self.assertEqual(window.btn_region_full.text(), "恢复全画面")
+            window._region_drawn((0.1, 0.2, 0.8, 0.9))
+            self.assertEqual(
+                window.runtime.recognition_regions.get("task2"),
+                (0.1, 0.2, 0.8, 0.9),
+            )
             app.processEvents()
         finally:
             window.runtime.stop()

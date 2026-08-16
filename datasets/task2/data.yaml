@@ -5,7 +5,7 @@ val: images/val
 test: images/test
 
 names:
-  0: blue
-  1: red
-  2: yellow
-  3: green
+  0: 绿色_正方体
+  1: 红色_正方体
+  2: 蓝色_正方体
+  3: 黄色_正方体

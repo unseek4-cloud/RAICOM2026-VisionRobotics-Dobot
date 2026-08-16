@@ -22,6 +22,7 @@ from typing import Any
 from ..config import Settings
 from ..events import EventBus
 from ..interfaces import CalibrationLike, CameraLike, DVSLike, DetectorLike, RobotLike
+from ..recognition_region import RecognitionRegionStore
 from ..result_store import ResultStore
 from ..types import Detection, PickTarget, StackPlaceTarget, TaskState
 from ..vision.yolo_detector import oriented_box_axis
@@ -44,6 +45,7 @@ class TaskOrchestrator:
         camera: CameraLike,
         calibration: CalibrationLike,
         detectors: Mapping[str, DetectorLike],
+        recognition_regions: RecognitionRegionStore,
         dvs: DVSLike,
         robot: RobotLike,
         simulation_world: Any | None = None,
@@ -54,6 +56,7 @@ class TaskOrchestrator:
         self.camera = camera
         self.calibration = calibration
         self.detectors = dict(detectors)
+        self.recognition_regions = recognition_regions
         self.dvs = dvs
         self.robot = robot
         self.simulation_world = simulation_world
@@ -731,7 +734,14 @@ class TaskOrchestrator:
         while time.monotonic() < deadline:
             self._check_continue()
             bundle = self.camera.get_frame()
-            detections = detector.detect(bundle.color_bgr)
+            raw_detections = detector.detect(bundle.color_bgr)
+            image_height, image_width = bundle.color_bgr.shape[:2]
+            detections = self.recognition_regions.filter(
+                task_name,
+                raw_detections,
+                image_width,
+                image_height,
+            )
             annotated = detector.annotate(bundle.color_bgr, detections)
             self.bus.emit("frame", annotated)
             self.bus.emit("detections", [d.to_dict() for d in detections])

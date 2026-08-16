@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any, Callable
@@ -12,6 +13,11 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..config import Settings
 from ..environment import collect_environment_report
+from ..recognition_region import (
+    FULL_RECOGNITION_REGION,
+    RecognitionRegion,
+    validate_recognition_region,
+)
 from ..runtime import SystemRuntime
 
 
@@ -28,12 +34,173 @@ class UiSignals(QtCore.QObject):
     worker_done = QtCore.pyqtSignal(str, bool, str)
 
 
+class RecognitionRegionLabel(QtWidgets.QLabel):
+    """按真实图像比例显示画面，并支持鼠标拖拽绘制归一化识别框。"""
+
+    region_changed = QtCore.pyqtSignal(object)
+
+    def __init__(self, text: str = "", parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._frame_pixmap = QtGui.QPixmap()
+        self._source_size = QtCore.QSize()
+        self._region: RecognitionRegion = FULL_RECOGNITION_REGION
+        self._drag_start: QtCore.QPointF | None = None
+        self._drag_end: QtCore.QPointF | None = None
+        self._drag_original: RecognitionRegion | None = None
+        self.setMouseTracking(True)
+
+    @property
+    def source_size(self) -> QtCore.QSize:
+        return QtCore.QSize(self._source_size)
+
+    def set_frame(self, image: QtGui.QImage) -> None:
+        self._frame_pixmap = QtGui.QPixmap.fromImage(image)
+        self._source_size = image.size()
+        self.setText("")
+        self.update()
+
+    def set_region(self, region: RecognitionRegion) -> None:
+        self._region = validate_recognition_region(region)
+        self.update()
+
+    def _image_rect(self) -> QtCore.QRectF:
+        if self._source_size.isEmpty():
+            return QtCore.QRectF()
+        area = QtCore.QRectF(self.contentsRect().adjusted(2, 2, -2, -2))
+        scale = min(
+            area.width() / float(self._source_size.width()),
+            area.height() / float(self._source_size.height()),
+        )
+        width = float(self._source_size.width()) * scale
+        height = float(self._source_size.height()) * scale
+        return QtCore.QRectF(
+            area.left() + (area.width() - width) / 2.0,
+            area.top() + (area.height() - height) / 2.0,
+            width,
+            height,
+        )
+
+    def _region_rect(self, image_rect: QtCore.QRectF) -> QtCore.QRectF:
+        x1, y1, x2, y2 = self._region
+        return QtCore.QRectF(
+            image_rect.left() + x1 * image_rect.width(),
+            image_rect.top() + y1 * image_rect.height(),
+            (x2 - x1) * image_rect.width(),
+            (y2 - y1) * image_rect.height(),
+        )
+
+    def _normalized_position(self, position: QtCore.QPointF) -> QtCore.QPointF:
+        image_rect = self._image_rect()
+        x = min(max(position.x(), image_rect.left()), image_rect.right())
+        y = min(max(position.y(), image_rect.top()), image_rect.bottom())
+        return QtCore.QPointF(
+            (x - image_rect.left()) / image_rect.width(),
+            (y - image_rect.top()) / image_rect.height(),
+        )
+
+    @staticmethod
+    def _region_from_points(
+        start: QtCore.QPointF, end: QtCore.QPointF
+    ) -> RecognitionRegion:
+        return validate_recognition_region(
+            (
+                min(start.x(), end.x()),
+                min(start.y(), end.y()),
+                max(start.x(), end.x()),
+                max(start.y(), end.y()),
+            )
+        )
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self._frame_pixmap.isNull():
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        image_rect = self._image_rect()
+        painter.drawPixmap(
+            image_rect,
+            self._frame_pixmap,
+            QtCore.QRectF(self._frame_pixmap.rect()),
+        )
+
+        region_rect = self._region_rect(image_rect)
+        outside = QtGui.QPainterPath()
+        outside.addRect(image_rect)
+        inside = QtGui.QPainterPath()
+        inside.addRect(region_rect)
+        painter.fillPath(outside.subtracted(inside), QtGui.QColor(0, 0, 0, 95))
+
+        dragging = self._drag_start is not None
+        pen = QtGui.QPen(QtGui.QColor("#ffd43b" if dragging else "#2fdf84"), 3)
+        if dragging:
+            pen.setStyle(QtCore.Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(region_rect)
+        painter.end()
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        image_rect = self._image_rect()
+        if (
+            event.button() != QtCore.Qt.LeftButton
+            or image_rect.isEmpty()
+            or not image_rect.contains(event.localPos())
+        ):
+            super().mousePressEvent(event)
+            return
+        point = self._normalized_position(event.localPos())
+        self._drag_start = point
+        self._drag_end = point
+        self._drag_original = self._region
+        event.accept()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._drag_start is None:
+            self.setCursor(
+                QtCore.Qt.CrossCursor
+                if self._image_rect().contains(event.localPos())
+                else QtCore.Qt.ArrowCursor
+            )
+            super().mouseMoveEvent(event)
+            return
+        self._drag_end = self._normalized_position(event.localPos())
+        if (
+            not math.isclose(self._drag_end.x(), self._drag_start.x())
+            and not math.isclose(self._drag_end.y(), self._drag_start.y())
+        ):
+            self._region = self._region_from_points(self._drag_start, self._drag_end)
+            self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._drag_start is None or event.button() != QtCore.Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        self._drag_end = self._normalized_position(event.localPos())
+        image_rect = self._image_rect()
+        width = abs(self._drag_end.x() - self._drag_start.x()) * image_rect.width()
+        height = abs(self._drag_end.y() - self._drag_start.y()) * image_rect.height()
+        if width >= 8.0 and height >= 8.0:
+            self._region = self._region_from_points(self._drag_start, self._drag_end)
+            self.region_changed.emit(self._region)
+        elif self._drag_original is not None:
+            self._region = self._drag_original
+        self._drag_start = None
+        self._drag_end = None
+        self._drag_original = None
+        self.update()
+        event.accept()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, settings: Settings, real_mode: bool):
         super().__init__()
         self.settings = settings
         self.real_mode = real_mode
         self.runtime = SystemRuntime(settings, real_mode=real_mode)
+        self._recognition_regions = {
+            task: self.runtime.recognition_regions.get(task) for task in ("task2", "task3")
+        }
         self.signals = UiSignals()
         self._busy = False
         self._initialized = False
@@ -99,11 +266,34 @@ class MainWindow(QtWidgets.QMainWindow):
         video_header.addStretch(1)
         video_header.addWidget(self.frame_info)
         video_layout.addLayout(video_header)
-        self.video = QtWidgets.QLabel("尚未收到图像")
+        self.video = RecognitionRegionLabel("尚未收到图像")
         self.video.setAlignment(QtCore.Qt.AlignCenter)
         self.video.setMinimumSize(700, 480)
         self.video.setObjectName("video")
         video_layout.addWidget(self.video, 1)
+
+        region_bar = QtWidgets.QHBoxLayout()
+        region_bar.addWidget(QtWidgets.QLabel("识别区域："))
+        self.region_task = QtWidgets.QComboBox()
+        self.region_task.addItem("任务二", "task2")
+        self.region_task.addItem("任务三", "task3")
+        self.region_task.setToolTip("Task2、Task3 的识别框相互独立")
+        region_bar.addWidget(self.region_task)
+        self.region_value = QtWidgets.QLabel()
+        self.region_value.setObjectName("regionValue")
+        region_bar.addWidget(self.region_value)
+        region_bar.addStretch(1)
+        self.btn_region_full = QtWidgets.QPushButton("恢复全画面")
+        region_bar.addWidget(self.btn_region_full)
+        video_layout.addLayout(region_bar)
+        region_hint = QtWidgets.QLabel(
+            "在画面内按住鼠标左键拖拽重画；仅中心点位于绿色框内的工件会被识别，修改立即生效。"
+        )
+        region_hint.setObjectName("muted")
+        region_hint.setWordWrap(True)
+        video_layout.addWidget(region_hint)
+        self.video.set_region(self._recognition_regions["task2"])
+        self._update_region_value()
         upper.addWidget(video_panel)
 
         right = QtWidgets.QWidget()
@@ -252,6 +442,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_task3.clicked.connect(lambda: self._run_task("task3"))
         self.btn_all.clicked.connect(lambda: self._run_task("all"))
         self.btn_stop.clicked.connect(self._stop_task)
+        self.region_task.currentIndexChanged.connect(self._region_task_changed)
+        self.video.region_changed.connect(self._region_drawn)
+        self.btn_region_full.clicked.connect(self._reset_region)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -267,6 +460,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }
             QLabel#sectionTitle { font-size:16px; font-weight:700; }
             QLabel#video { background:#0c141d; color:#8fa3b7; border:1px solid #263746; border-radius:5px; }
+            QLabel#regionValue { color:#16784b; font-weight:700; }
             QLabel#stateLabel { font-size:22px; font-weight:700; color:#0b63ce; }
             QLabel#statusOn { color:#16784b; font-weight:700; }
             QLabel#statusOff { color:#8b99a8; }
@@ -335,6 +529,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.result_table.setRowCount(0)
             self.task1_text.clear()
             self._refresh_progress()
+        elif task in ("task2", "task3"):
+            self._select_region_task(task)
         self._run_background(f"task:{task}", lambda: self.runtime.orchestrator.run(task))
 
     def _stop_task(self) -> None:
@@ -359,16 +555,59 @@ class MainWindow(QtWidgets.QMainWindow):
             ).copy()
         else:
             return
-        pixmap = QtGui.QPixmap.fromImage(image).scaled(
-            self.video.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
-        )
-        self.video.setPixmap(pixmap)
+        self.video.set_frame(image)
+        self._update_region_value()
         self.frame_info.setText(f"{bgr.shape[1]}×{bgr.shape[0]} · {time.strftime('%H:%M:%S')}")
+
+    def _selected_region_task(self) -> str:
+        return str(self.region_task.currentData())
+
+    def _select_region_task(self, task: str) -> None:
+        index = self.region_task.findData(task)
+        if index >= 0:
+            self.region_task.setCurrentIndex(index)
+
+    @QtCore.pyqtSlot(int)
+    def _region_task_changed(self, _index: int) -> None:
+        task = self._selected_region_task()
+        self.video.set_region(self._recognition_regions[task])
+        self._update_region_value()
+
+    @QtCore.pyqtSlot(object)
+    def _region_drawn(self, region: object) -> None:
+        task = self._selected_region_task()
+        validated = self.runtime.recognition_regions.set(task, region)
+        self._recognition_regions[task] = validated
+        self.video.set_region(validated)
+        self._update_region_value()
+        task_text = "任务二" if task == "task2" else "任务三"
+        self.runtime.log.info("%s 识别区域已调整为 %s", task_text, self.region_value.text())
+
+    def _reset_region(self) -> None:
+        self._region_drawn(FULL_RECOGNITION_REGION)
+
+    def _update_region_value(self) -> None:
+        task = self._selected_region_task()
+        x1, y1, x2, y2 = self._recognition_regions[task]
+        source = self.video.source_size
+        if source.isEmpty():
+            self.region_value.setText(
+                f"{x1:.3f}, {y1:.3f} → {x2:.3f}, {y2:.3f}（等待画面）"
+            )
+            return
+        self.region_value.setText(
+            f"({round(x1 * source.width())}, {round(y1 * source.height())}) → "
+            f"({round(x2 * source.width())}, {round(y2 * source.height())}) px"
+        )
 
     @QtCore.pyqtSlot(str, str)
     def _show_state(self, state: str, detail: str) -> None:
         self.state_label.setText(state)
         self.state_detail.setText(detail or "-")
+        if state == "任务二":
+            self._select_region_task("task2")
+        elif state == "任务三":
+            self._select_region_task("task3")
 
     @QtCore.pyqtSlot(str, str, bool)
     def _show_component(self, key: str, text: str, ok: bool) -> None:

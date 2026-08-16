@@ -11,6 +11,7 @@ from typing import Any
 from .config import Settings
 from .events import EventBus
 from .logging_utils import configure_logging
+from .recognition_region import RecognitionRegionStore
 from .task.orchestrator import TaskOrchestrator
 
 
@@ -23,6 +24,7 @@ class SystemRuntime:
         self.settings = settings
         self.real_mode = real_mode
         self.bus = EventBus()
+        self.recognition_regions = RecognitionRegionStore(settings)
         self.logger = configure_logging(
             settings.project_root,
             self.bus,
@@ -142,6 +144,7 @@ class SystemRuntime:
                     camera=self.camera,
                     calibration=self.calibration,
                     detectors=self.detectors,
+                    recognition_regions=self.recognition_regions,
                     dvs=self.dvs,
                     robot=self.robot,
                     simulation_world=self.simulation_world,

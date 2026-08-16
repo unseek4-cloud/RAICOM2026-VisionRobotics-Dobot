@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .recognition_region import RecognitionRegionError, validate_recognition_region
+
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover - 由入口给出更友好的环境报告
@@ -93,6 +95,17 @@ class Settings:
             raise SettingsError(f"{key} 必须是不小于 1 的整数")
         return value
 
+    def task_recognition_region(self, task_name: str) -> tuple[float, float, float, float]:
+        """返回任务二/三的归一化识别区域 ``(x1, y1, x2, y2)``。"""
+
+        if task_name not in {"task2", "task3"}:
+            raise SettingsError(f"不支持配置识别区域的任务：{task_name}")
+        key = f"tasks.{task_name}.recognition_region"
+        try:
+            return validate_recognition_region(self.get(key, [0.0, 0.0, 1.0, 1.0]))
+        except RecognitionRegionError as exc:
+            raise SettingsError(f"{key} 无效：{exc}") from exc
+
     def _validate_structure(self) -> None:
         required_sections = (
             "application",
@@ -110,6 +123,7 @@ class Settings:
 
         for task_name in ("task2", "task3"):
             self.task_max_objects(task_name)
+            self.task_recognition_region(task_name)
 
         try:
             timeout = float(self.get("application.competition_timeout_s", 600))
