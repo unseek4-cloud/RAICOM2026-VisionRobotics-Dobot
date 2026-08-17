@@ -76,7 +76,7 @@ yolo:
     # 留空表示接受该模型输出的全部类别。若模型同时检测其他任务道具，应填写关键字，
     # 例如 ["cube", "cylinder", "立方体", "圆柱体"]。
     include_class_keywords: []
-    exclude_class_keywords: ["red"]
+    exclude_class_keywords: []
 
   task3:
     model: "models/task3.pt"
