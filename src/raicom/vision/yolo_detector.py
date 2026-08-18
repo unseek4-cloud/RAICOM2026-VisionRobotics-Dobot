@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""任务二/三 YOLO 检测、类别路由和中文可视化。"""
+"""3D 识别抓取 YOLO-OBB 检测、类别路由和中文可视化。"""
 
 from __future__ import annotations
 
 import math
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -180,20 +181,7 @@ def classify_color_hsv(image_bgr: np.ndarray, bbox: Sequence[int]) -> str:
 
 
 def _task_route(settings: Settings, task: str, detection: Detection) -> str:
-    if task == "task2":
-        route_by = str(settings.get("tasks.task2.route_by", "color")).lower()
-        if route_by == "shape":
-            return detection.shape if detection.shape != "unknown" else "default"
-        if route_by == "class":
-            return detection.class_name
-        return detection.color if detection.color != "unknown" else "default"
-    known_label = settings.get("yolo.task3.known_label", None)
-    if known_label not in (None, ""):
-        return (
-            "match"
-            if detection.class_name.casefold() == str(known_label).casefold()
-            else "not_match"
-        )
+    del settings, task
     return detection.class_name or "default"
 
 
@@ -214,35 +202,45 @@ def annotate_detections(
         raise DetectorError("annotate 需要 BGR 三通道图像")
     output = image_bgr.copy()
     height, width = output.shape[:2]
+    font_size = max(18, min(42, int(round(height * 0.028))))
+    line_width = max(2, min(4, int(round(width / 700.0))))
     labels: list[tuple[int, int, str]] = []
     for detection in detections:
         x1, y1, x2, y2 = detection.bbox
         x1, x2 = max(0, min(x1, width - 1)), max(0, min(x2, width - 1))
         y1, y2 = max(0, min(y1, height - 1)), max(0, min(y2, height - 1))
-        color = (30, 210, 50) if detection.task == "task2" else (230, 150, 30)
+        color = (230, 150, 30)
         if detection.oriented_bbox is not None:
             polygon = np.rint(np.asarray(detection.oriented_bbox)).astype(np.int32)
             polygon[:, 0] = np.clip(polygon[:, 0], 0, width - 1)
             polygon[:, 1] = np.clip(polygon[:, 1], 0, height - 1)
-            cv2.polylines(output, [polygon.reshape((-1, 1, 2))], True, color, 2)
+            cv2.polylines(
+                output,
+                [polygon.reshape((-1, 1, 2))],
+                True,
+                color,
+                line_width,
+            )
         else:
-            cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(output, (x1, y1), (x2, y2), color, line_width)
         cv2.drawMarker(
             output,
             detection.pixel_center,
             (0, 0, 255),
             cv2.MARKER_CROSS,
-            12,
-            2,
+            max(12, line_width * 6),
+            line_width,
         )
         parts = [detection.class_name]
-        if detection.task == "task2":
-            parts.append(_DISPLAY_COLOR.get(detection.color, detection.color))
-            parts.append(_DISPLAY_SHAPE.get(detection.shape, detection.shape))
-        parts.append(f"{detection.confidence:.2f}")
+        parts.append(f"置信度：{detection.confidence:.2f}")
+        object_height = detection.extra.get("object_height_mm")
+        if isinstance(object_height, (int, float)) and math.isfinite(float(object_height)):
+            parts.append(f"高度={float(object_height):.1f}mm")
+        else:
+            parts.append("高度=无效")
         if detection.image_angle_deg is not None:
             parts.append(f"angle={detection.image_angle_deg:+.1f}deg")
-        labels.append((x1, max(0, y1 - 24), " / ".join(parts)))
+        labels.append((x1, max(0, y1 - font_size - 6), " / ".join(parts)))
 
     # Pillow 使用系统中文字体；找不到字体时仍绘制 ASCII 类别并记录警告。
     rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
@@ -251,12 +249,12 @@ def annotate_detections(
     font = None
     if font_path:
         try:
-            font = ImageFont.truetype(str(font_path), 18)
+            font = ImageFont.truetype(str(font_path), font_size)
         except Exception as exc:
             _log(logger, "warning", f"中文字体加载失败 {font_path}：{exc}")
     if font is None:
         try:
-            font = ImageFont.truetype("msyh.ttc", 18)
+            font = ImageFont.truetype("msyh.ttc", font_size)
         except Exception:
             font = ImageFont.load_default()
     for x, y, label in labels:
@@ -274,8 +272,8 @@ class YoloDetector:
     """Ultralytics YOLO 真模型封装。"""
 
     def __init__(self, settings: Settings, task: str, logger: Any = None) -> None:
-        if task not in {"task2", "task3"}:
-            raise DetectorError("YOLO task 只能是 task2 或 task3")
+        if task != "task3":
+            raise DetectorError("YOLO 仅支持 3D识别抓取（task3）")
         self.settings = settings
         self.task = task
         self.logger = logger
@@ -283,7 +281,9 @@ class YoloDetector:
         self.iou = float(settings.get("yolo.iou", 0.45))
         self.image_size = int(settings.get("yolo.image_size", 640))
         self.max_detections = int(settings.get("yolo.max_detections", 20))
-        self.use_hsv = bool(settings.get("yolo.use_hsv_color_fallback", True))
+        # UI 实时预览和任务状态机可能同时请求推理；Ultralytics 模型实例不应被
+        # 两个线程并发调用。
+        self._inference_lock = threading.RLock()
         self.font_path = settings.get("yolo.chinese_font", None)
         self.include_keywords = tuple(
             str(item).casefold()
@@ -339,16 +339,22 @@ class YoloDetector:
     def detect(self, image_bgr: np.ndarray) -> list[Detection]:
         if image_bgr is None or image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
             raise DetectorError("YOLO 输入必须是 BGR 三通道图像")
+        # 部分轻量单测会绕过 __init__ 注入假模型；惰性补锁也让这类封装保持兼容。
+        inference_lock = getattr(self, "_inference_lock", None)
+        if inference_lock is None:
+            inference_lock = threading.RLock()
+            self._inference_lock = inference_lock
         try:
-            results = self.model.predict(
-                source=image_bgr,
-                conf=self.confidence,
-                iou=self.iou,
-                imgsz=self.image_size,
-                device=self.device,
-                max_det=self.max_detections,
-                verbose=False,
-            )
+            with inference_lock:
+                results = self.model.predict(
+                    source=image_bgr,
+                    conf=self.confidence,
+                    iou=self.iou,
+                    imgsz=self.image_size,
+                    device=self.device,
+                    max_det=self.max_detections,
+                    verbose=False,
+                )
         except Exception as exc:
             raise DetectorError(f"YOLO 推理失败：{exc}") from exc
         if not results:
@@ -391,9 +397,7 @@ class YoloDetector:
                 (float(point[0]), float(point[1])) for point in points_array
             )
             color = infer_color_from_name(class_name)
-            if self.task == "task2" and color == "unknown" and self.use_hsv:
-                color = classify_color_hsv(image_bgr, (x1, y1, x2, y2))
-            # 任务三类别名若也包含 cube/cylinder，保留形状信息；圆柱无有效 RZ。
+            # 类别名若包含 cylinder/圆柱，保留旋转对称信息，抓取不采用随机 OBB 角度。
             shape = infer_shape(class_name)
             detection = Detection(
                 task=self.task,

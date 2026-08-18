@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import Settings
 from ..events import EventBus
-from ..types import PickTarget, RobotReply, StackPlaceTarget
+from ..types import DirectPlaceTarget, RobotReply
 
 
 class MockRobot:
@@ -33,7 +33,7 @@ class MockRobot:
         self._shutdown = threading.Event()
         self._command_lock = threading.Lock()
         self.simulation_world = simulation_world
-        self._holding: tuple[str, StackPlaceTarget] | None = None
+        self._at_photo = True
 
     @property
     def is_connected(self) -> bool:
@@ -41,9 +41,7 @@ class MockRobot:
 
     def start(self) -> None:
         self._shutdown.clear()
-        self._holding = None
-        if self.simulation_world is not None:
-            self.simulation_world.cancel_placement_view()
+        self._at_photo = True
         self._connected.set()
         self.bus.emit("robot_connection", True)
         self.log.info("模拟机械臂已启动")
@@ -51,9 +49,7 @@ class MockRobot:
     def stop(self) -> None:
         self._shutdown.set()
         self._connected.clear()
-        self._holding = None
-        if self.simulation_world is not None:
-            self.simulation_world.cancel_placement_view()
+        self._at_photo = False
         self.bus.emit("robot_connection", False)
         self.log.info("模拟机械臂已停止")
 
@@ -61,60 +57,28 @@ class MockRobot:
         return self._connected.wait(max(0.0, float(timeout_s)))
 
     def go_photo(self) -> RobotReply:
-        if self._holding is not None:
-            return RobotReply("", "error", "仍吸附任务三工件，禁止直接回拍照位", {"local": True})
-        return self._run("go_photo", raw={"phase": "at_photo"})
+        reply = self._run("go_photo", raw={"phase": "at_photo"})
+        if reply.status == "done":
+            self._at_photo = True
+        return reply
 
-    def pick_and_place(self, target: PickTarget) -> RobotReply:
-        values: dict[str, Any] = {
-            "pick_x_mm": target.pick_x_mm,
-            "pick_y_mm": target.pick_y_mm,
-            "pick_z_mm": target.pick_z_mm,
-            "pick_rz_deg": target.pick_rz_deg,
-            "place_x_mm": target.place_x_mm,
-            "place_y_mm": target.place_y_mm,
-            "place_down_mm": target.place_down_mm,
-        }
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            for value in values.values()
-        ):
-            return RobotReply(
-                command_id="",
-                status="error",
-                message="模拟抓取坐标包含非有限数字",
-                raw={"local": True},
-            )
+    def is_at_photo(self) -> RobotReply:
+        phase = "at_photo" if self._at_photo else "away_from_photo"
         return self._run(
-            "pick_place",
-            raw={
-                "phase": "at_photo",
-                "task": target.task,
-                "object_id": target.object_id,
-                "route_key": target.route_key,
-                "pick": [target.pick_x_mm, target.pick_y_mm, target.pick_z_mm],
-                "pick_rz": target.pick_rz_deg,
-                "place_rz": 0.0,
-                "place": [target.place_x_mm, target.place_y_mm, target.place_down_mm],
-            },
+            "check_photo", raw={"phase": phase, "at_photo": self._at_photo}
         )
 
-    def pick_to_inspection(self, target: StackPlaceTarget) -> RobotReply:
-        if self._holding is not None:
-            return RobotReply("", "error", "模拟吸盘已持有工件", {"local": True})
+    def pick_and_place_direct(self, target: DirectPlaceTarget) -> RobotReply:
         values = (
             target.pick_x_mm,
             target.pick_y_mm,
             target.pick_z_mm,
             target.pick_rz_deg,
-            target.object_height_mm,
             target.place_x_mm,
             target.place_y_mm,
-            target.inspection_x_mm,
-            target.inspection_y_mm,
-            target.inspection_z_mm,
+            target.place_rx_deg,
+            target.place_ry_deg,
+            target.place_rz_deg,
         )
         if any(
             isinstance(value, bool)
@@ -122,56 +86,45 @@ class MockRobot:
             or not math.isfinite(float(value))
             for value in values
         ):
-            return RobotReply("", "error", "模拟动态抓取坐标包含非有限数字", {"local": True})
+            return RobotReply("", "error", "模拟直接抓放坐标包含非有限数字", {"local": True})
+        if not self._at_photo:
+            return RobotReply("", "error", "机械臂不在拍照位", {"at_photo": False})
+        self._at_photo = False
         reply = self._run(
-            "pick_to_inspection",
+            "pick_place_direct",
             raw={
-                "phase": "at_place_inspection",
-                "holding_part": True,
+                "phase": "at_photo",
+                "holding_part": False,
                 "task": target.task,
                 "object_id": target.object_id,
                 "route_key": target.route_key,
                 "pick_rz": target.pick_rz_deg,
-                "inspection_rz": 0.0,
+                "pick_z": target.pick_z_mm,
+                "place_z": target.pick_z_mm,
+                "place_rx": target.place_rx_deg,
+                "place_ry": target.place_ry_deg,
+                "place_rz": target.place_rz_deg,
             },
         )
         if reply.status == "done":
-            self._holding = (reply.command_id, target)
+            self._at_photo = True
             if self.simulation_world is not None:
-                self.simulation_world.begin_placement_inspection(
-                    target.place_x_mm,
-                    target.place_y_mm,
-                    target.inspection_z_mm,
-                    target.object_height_mm,
+                source = next(
+                    (
+                        item
+                        for item in self.simulation_world.objects()
+                        if item.object_id == target.object_id
+                    ),
+                    None,
                 )
-        return reply
-
-    def place_from_inspection(
-        self, target: StackPlaceTarget, hold_id: str, place_z_mm: float
-    ) -> RobotReply:
-        if self._holding is None or self._holding[0] != str(hold_id):
-            return RobotReply("", "error", "模拟动态放置 hold_id 不匹配", {"local": True})
-        if (
-            isinstance(place_z_mm, bool)
-            or not isinstance(place_z_mm, (int, float))
-            or not math.isfinite(float(place_z_mm))
-        ):
-            return RobotReply("", "error", "模拟动态放置 Z 无效", {"local": True})
-        reply = self._run(
-            "place_from_inspection",
-            raw={
-                "phase": "at_photo",
-                "holding_part": False,
-                "hold_id": str(hold_id),
-                "place_z": float(place_z_mm),
-                "place_rz": 0.0,
-                "route_key": target.route_key,
-            },
-        )
-        if reply.status == "done":
-            if self.simulation_world is not None:
-                self.simulation_world.complete_placement()
-            self._holding = None
+                if source is not None:
+                    self.simulation_world.complete_direct_placement(
+                        target.place_x_mm,
+                        target.place_y_mm,
+                        source.height_mm,
+                    )
+        else:
+            self._at_photo = False
         return reply
 
     def request_stop(self) -> None:

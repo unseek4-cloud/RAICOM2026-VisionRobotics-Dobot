@@ -18,12 +18,12 @@ from tools.capture_yolo_dataset import (
 
 class YoloDatasetSplitTests(unittest.TestCase):
     def _make_task(self, parent: Path, total: int, *, labels: int | None = None) -> Path:
-        task_root = parent / "task2"
+        task_root = parent / "task3"
         photo_dir = task_root / "photo"
         photo_dir.mkdir(parents=True, exist_ok=True)
         label_total = total if labels is None else labels
         for index in range(total):
-            image = photo_dir / f"task2_{index:03d}.jpg"
+            image = photo_dir / f"task3_{index:03d}.jpg"
             image.write_bytes(b"not-a-real-jpg-needed-for-copy-test")
             if index < label_total:
                 image.with_suffix(".txt").write_text(

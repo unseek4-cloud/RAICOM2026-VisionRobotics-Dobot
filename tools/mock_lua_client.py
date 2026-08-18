@@ -116,7 +116,12 @@ class MockLuaClient:
                 encode({"v": 1, "id": command_id, "status": "pong", "state": "idle"})
             )
             return True
-        if command not in {"go_photo", "pick_place", "stop_after_current"}:
+        if command not in {
+            "go_photo",
+            "check_photo",
+            "pick_place_direct",
+            "stop_after_current",
+        }:
             sock.sendall(
                 encode(
                     {
@@ -139,11 +144,18 @@ class MockLuaClient:
         sock.sendall(accepted[midpoint:])
         time.sleep(self.delay_s)
 
-        phase = "idle" if command == "stop_after_current" else "at_photo"
+        phase = {"stop_after_current": "idle"}.get(command, "at_photo")
         terminal = {"v": 1, "id": command_id, "status": "done", "phase": phase}
+        if command == "check_photo":
+            terminal.update(
+                at_photo=True,
+                current_pose="160.000,-60.000,430.000,180.000,0.000,0.000",
+            )
+        elif command == "pick_place_direct":
+            terminal["holding_part"] = False
         self.completed[command_id] = (dict(request), terminal)
 
-        if self.drop_once and not self.dropped and command in {"go_photo", "pick_place"}:
+        if self.drop_once and not self.dropped and command in {"go_photo", "pick_place_direct"}:
             self.dropped = True
             print("[模拟Lua] 已缓存终态，故意在发送 done 前断线")
             return False
@@ -187,4 +199,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

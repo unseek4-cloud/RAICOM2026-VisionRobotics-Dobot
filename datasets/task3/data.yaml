@@ -1,12 +1,14 @@
-# 任务三类别只是比赛前的模板，请按现场图片类别和实际标注顺序修改。
-# 如果采用“已知图案/差异图案”二分类，需同步设置 config/settings.yaml 的 known_label。
+# 3D识别抓取七分类；类别名必须与 config/settings.yaml 的放置位姿键一致。
 path: D:/CAIM/RAICOM-Project/datasets/task3
 train: images/train
 val: images/val
 test: images/test
 
 names:
-  0: card
-  1: circula
-  2: cube_rad
-  3: cube_bule
+  0: 大圆柱
+  1: 正方体
+  2: 梯形
+  3: 长方体
+  4: 圆柱
+  5: 六棱柱
+  6: 平行四边形

@@ -137,9 +137,18 @@ class RealSenseCamera:
     def __init__(self, settings: Settings, logger: Any = None) -> None:
         self.settings = settings
         self.logger = logger
-        self.width = int(settings.get("camera.width", 640))
-        self.height = int(settings.get("camera.height", 480))
-        self.fps = int(settings.get("camera.fps", 30))
+        # D435 的 RGB 与双目深度传感器支持的最大分辨率不同，不能再用同一组
+        # width/height 同时配置两路流。保留 width/height/fps 属性作为彩色流
+        # 兼容别名，避免已有调用方失效。
+        self.color_width = int(settings.get("camera.width", 1920))
+        self.color_height = int(settings.get("camera.height", 1080))
+        self.color_fps = int(settings.get("camera.fps", 30))
+        self.depth_width = int(settings.get("camera.depth_width", 1280))
+        self.depth_height = int(settings.get("camera.depth_height", 720))
+        self.depth_fps = int(settings.get("camera.depth_fps", 30))
+        self.width = self.color_width
+        self.height = self.color_height
+        self.fps = self.color_fps
         self.align_depth_to_color = bool(
             settings.get("camera.align_depth_to_color", True)
         )
@@ -157,8 +166,18 @@ class RealSenseCamera:
         self.temporal_samples = max(
             1, int(settings.get("camera.temporal_depth_samples", 5))
         )
-        if self.width <= 0 or self.height <= 0 or self.fps <= 0:
-            raise CameraError("相机宽、高、FPS 必须大于 0")
+        if any(
+            value <= 0
+            for value in (
+                self.color_width,
+                self.color_height,
+                self.color_fps,
+                self.depth_width,
+                self.depth_height,
+                self.depth_fps,
+            )
+        ):
+            raise CameraError("相机彩色/深度流的宽、高、FPS 必须大于 0")
         if self.depth_min_mm <= 0 or self.depth_max_mm <= self.depth_min_mm:
             raise CameraError("相机深度量程配置错误")
         if self.patch_px < 3 or self.patch_px % 2 == 0:
@@ -201,17 +220,17 @@ class RealSenseCamera:
                 config.enable_device(str(serial))
             config.enable_stream(
                 rs.stream.color,
-                self.width,
-                self.height,
+                self.color_width,
+                self.color_height,
                 rs.format.bgr8,
-                self.fps,
+                self.color_fps,
             )
             config.enable_stream(
                 rs.stream.depth,
-                self.width,
-                self.height,
+                self.depth_width,
+                self.depth_height,
                 rs.format.z16,
-                self.fps,
+                self.depth_fps,
             )
             try:
                 profile = pipeline.start(config)
@@ -241,7 +260,9 @@ class RealSenseCamera:
             _emit_log(
                 self.logger,
                 "info",
-                f"RealSense 已启动：{self.width}×{self.height}@{self.fps}，"
+                "RealSense 已启动："
+                f"RGB {self.color_width}×{self.color_height}@{self.color_fps}，"
+                f"Depth {self.depth_width}×{self.depth_height}@{self.depth_fps}，"
                 f"depth_scale={self._depth_scale_mm:.6f} mm",
             )
 

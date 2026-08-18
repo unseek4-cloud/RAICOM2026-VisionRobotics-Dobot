@@ -140,7 +140,6 @@ class CalibrationModel:
     min_object_height_mm: float
     max_object_height_mm: float
     xy_offset_mm: tuple[float, float]
-    workspace_mm: dict[str, tuple[float, float]]
     simulation: bool = False
     camera_to_tip_mm: np.ndarray | None = None
     base_to_tip_mm: np.ndarray | None = None
@@ -196,12 +195,8 @@ class CalibrationModel:
             2,
             "calibration.xy_offset_mm",
         )
-        # 模拟图像坐标是软件联调用的近似映射，不冒充真机工作空间。真机仍在
-        # 每次抓取/释放前严格校验三轴边界。
-        workspace = {} if simulation else cls._workspace_from_settings(settings, required=True)
         order = str(settings.get("calibration.pose_rotation_order", "zyx"))
-        # 即使模拟模式不读取 EIH 文件，也先验证姿态旋转约定，保证动态放置
-        # 深度计算和真机使用同一套坐标变换语义。
+        # 即使模拟模式不读取 EIH 文件，也先验证姿态旋转约定。
         _pose_matrix((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), order)
 
         if simulation:
@@ -212,10 +207,8 @@ class CalibrationModel:
                 min_object_height_mm=min_height,
                 max_object_height_mm=max_height,
                 xy_offset_mm=(xy_offset[0], xy_offset[1]),
-                workspace_mm=workspace,
                 simulation=True,
-                # 模拟相机光轴沿相机 +Z；吸盘朝下姿态 Rx=180° 会把它变为
-                # 机器人 -Z，从 inspection_z 看向模拟放置台面。
+                # 保留单位变换矩阵供模拟方向计算使用。
                 camera_to_tip_mm=np.eye(4, dtype=np.float64),
                 pose_rotation_order=order,
             )
@@ -229,7 +222,7 @@ class CalibrationModel:
         calibration_type = metadata.get("Calibration type", "").strip()
         if dimension and dimension != "3D":
             raise CalibrationError(
-                f"标定文件 Dimension type={dimension!r}，任务二/三必须使用 3D EIH"
+                f"标定文件 Dimension type={dimension!r}，3D识别抓取必须使用 3D EIH"
             )
         folded_type = calibration_type.casefold()
         if calibration_type and "eih" not in folded_type and "眼在手" not in calibration_type:
@@ -266,34 +259,11 @@ class CalibrationModel:
             min_object_height_mm=min_height,
             max_object_height_mm=max_height,
             xy_offset_mm=(xy_offset[0], xy_offset[1]),
-            workspace_mm=workspace,
             simulation=False,
             camera_to_tip_mm=camera_to_tip,
             base_to_tip_mm=base_to_tip,
             pose_rotation_order=order,
         )
-
-    @staticmethod
-    def _workspace_from_settings(
-        settings: Settings, *, required: bool
-    ) -> dict[str, tuple[float, float]]:
-        result: dict[str, tuple[float, float]] = {}
-        for axis in ("x", "y", "z"):
-            raw = settings.get(f"robot.workspace_mm.{axis}", None)
-            try:
-                bounds = _vector(raw, 2, f"robot.workspace_mm.{axis}")
-            except CalibrationError:
-                if required:
-                    raise
-                continue
-            if bounds[0] >= bounds[1]:
-                if required:
-                    raise CalibrationError(
-                        f"robot.workspace_mm.{axis} 下限必须小于上限"
-                    )
-                continue
-            result[axis] = (bounds[0], bounds[1])
-        return result
 
     @staticmethod
     def _camera_point(
@@ -370,9 +340,7 @@ class CalibrationModel:
             robot_x = float(robot_point[0] / robot_point[3]) + self.xy_offset_mm[0]
             robot_y = float(robot_point[1] / robot_point[3]) + self.xy_offset_mm[1]
 
-        robot_xyz = (float(robot_x), float(robot_y), float(robot_z))
-        self.validate_workspace(robot_xyz)
-        return camera_xyz, robot_xyz
+        return camera_xyz, (float(robot_x), float(robot_y), float(robot_z))
 
     def image_axis_to_robot_rz_deg(
         self,
@@ -410,10 +378,9 @@ class CalibrationModel:
         return 0.0 if abs(normalized) < 1e-9 else float(normalized)
 
     def object_height_mm(self, depth_mm: float) -> float:
-        """仅用抓取台面的参考深度计算工件高度。
+        """用共用台面的参考深度计算工件高度。
 
-        这个参考绝不用于任务三的放置台面；放置顶面由
-        :meth:`locate_surface_at_robot_xy` 在目标上方重新测量。
+        检测区与放置区共用同一台面高度；P2 使用与当前 P1 相同的识别 Z。
         """
 
         depth = _number(depth_mm, "depth_mm")
@@ -422,193 +389,9 @@ class CalibrationModel:
             raise CalibrationError(
                 f"工件高度 {object_height:.2f} mm 超出允许范围 "
                 f"[{self.min_object_height_mm:.2f}, {self.max_object_height_mm:.2f}]；"
-                "请检查抓取台面深度、取样位置或相机拍照位"
+                "请检查共用台面深度、取样位置或相机拍照位"
             )
         return float(object_height)
-
-    def placement_inspection_pose(
-        self,
-        place_xy_mm: tuple[float, float],
-        inspection_z_mm: float,
-        orientation_deg: tuple[float, float, float],
-    ) -> tuple[float, float, float, float, float, float]:
-        """生成“相机位于放置点上方、工件横向让开”的观察姿态。
-
-        EIH 矩阵中的相机原点相对 Tip 往往有较大的 XY 偏移。这里让相机原点
-        的机器人 XY 对准放置点，而不是让吸盘 XY 对准放置点，避免被吸住的
-        工件遮挡目标顶面。最终目标像素不靠猜测，而由三维点云按机器人 XY 搜索。
-        """
-
-        if self.camera_to_tip_mm is None:
-            raise CalibrationError("动态放置高度计算缺少 Camera→Tip 变换")
-        place_x = _number(place_xy_mm[0], "place_x_mm")
-        place_y = _number(place_xy_mm[1], "place_y_mm")
-        inspection_z = _number(inspection_z_mm, "place_inspection_z_mm")
-        rx, ry, rz = (
-            _number(value, f"placement_orientation[{index}]")
-            for index, value in enumerate(orientation_deg)
-        )
-        zero_xy_tip = _pose_matrix(
-            (0.0, 0.0, inspection_z, rx, ry, rz), self.pose_rotation_order
-        )
-        camera_origin = zero_xy_tip @ self.camera_to_tip_mm @ np.array(
-            (0.0, 0.0, 0.0, 1.0), dtype=np.float64
-        )
-        if not np.isfinite(camera_origin).all():
-            raise CalibrationError("放置观察位的相机原点变换无效")
-        pose = (
-            float(place_x - camera_origin[0]),
-            float(place_y - camera_origin[1]),
-            float(inspection_z),
-            float(rx),
-            float(ry),
-            float(rz),
-        )
-        self.validate_workspace(pose[:3])
-        return pose
-
-    def locate_surface_at_robot_xy(
-        self,
-        bundle: Any,
-        target_xy_mm: tuple[float, float],
-        tip_pose_mm_deg: tuple[float, float, float, float, float, float],
-        *,
-        depth_min_mm: float,
-        depth_max_mm: float,
-        radius_mm: float,
-        min_points: int,
-    ) -> tuple[tuple[float, float, float], float, int]:
-        """从当前深度帧中寻找指定机器人 XY 处的实际顶面。
-
-        与抓取 Z 的台面差值公式不同，本方法使用“当前 Tip 姿态 × EIH 矩阵”
-        把深度点云直接变换到机器人坐标系，再在目标 XY 小圆域内取稳健中值。
-        因而抓取台面和放置台面可以处在完全不同的深度，已有堆叠也会自然成为
-        下一件的目标顶面。
-        """
-
-        if self.camera_to_tip_mm is None:
-            raise CalibrationError("动态放置高度计算缺少 Camera→Tip 变换")
-        target_x = _number(target_xy_mm[0], "target_x_mm")
-        target_y = _number(target_xy_mm[1], "target_y_mm")
-        minimum = _number(depth_min_mm, "depth_min_mm")
-        maximum = _number(depth_max_mm, "depth_max_mm")
-        radius = _number(radius_mm, "placement_surface_radius_mm")
-        if minimum <= 0 or maximum <= minimum:
-            raise CalibrationError("放置高度识别的深度量程无效")
-        if radius <= 0:
-            raise CalibrationError("放置高度识别半径必须大于 0")
-        if isinstance(min_points, bool) or int(min_points) < 3:
-            raise CalibrationError("放置高度识别最少点数必须不小于 3")
-
-        depth = np.asarray(bundle.depth_mm, dtype=np.float64)
-        if depth.ndim != 2:
-            raise CalibrationError("放置高度识别需要二维深度图")
-        intrinsics = bundle.intrinsics
-        if depth.shape != (int(intrinsics.height), int(intrinsics.width)):
-            raise CalibrationError("放置高度识别的深度图尺寸与内参不一致")
-        fx = _number(intrinsics.fx, "intrinsics.fx")
-        fy = _number(intrinsics.fy, "intrinsics.fy")
-        ppx = _number(intrinsics.ppx, "intrinsics.ppx")
-        ppy = _number(intrinsics.ppy, "intrinsics.ppy")
-        if fx <= 0 or fy <= 0:
-            raise CalibrationError("相机焦距 fx/fy 必须大于 0")
-
-        valid = np.isfinite(depth) & (depth >= minimum) & (depth <= maximum)
-        rows, cols = np.nonzero(valid)
-        if rows.size < int(min_points):
-            raise CalibrationError(
-                f"放置点深度图有效点不足：{rows.size}/{int(min_points)}"
-            )
-        z_camera = depth[rows, cols]
-        camera_points = np.column_stack(
-            (
-                (cols.astype(np.float64) - ppx) * z_camera / fx,
-                (rows.astype(np.float64) - ppy) * z_camera / fy,
-                z_camera,
-            )
-        )
-        base_from_camera = (
-            _pose_matrix(tip_pose_mm_deg, self.pose_rotation_order)
-            @ self.camera_to_tip_mm
-        )
-        rotation = base_from_camera[:3, :3]
-        translation = base_from_camera[:3, 3]
-        robot_points = camera_points @ rotation.T + translation
-        radial_distance = np.hypot(
-            robot_points[:, 0] - target_x, robot_points[:, 1] - target_y
-        )
-        native = getattr(intrinsics, "native", None)
-        if native is not None:
-            # 针孔点云只负责快速找到候选像素；真机最终结果逐点交回
-            # RealSense SDK，按设备内参中的实际畸变模型精确反投影。
-            coarse_radius = max(radius * 2.0, radius + 6.0)
-            candidate_indexes = np.flatnonzero(radial_distance <= coarse_radius)
-            if candidate_indexes.size:
-                exact_camera_points = np.asarray(
-                    [
-                        self._camera_point(
-                            (int(cols[index]), int(rows[index])),
-                            float(z_camera[index]),
-                            intrinsics,
-                        )
-                        for index in candidate_indexes
-                    ],
-                    dtype=np.float64,
-                )
-                exact_robot_points = exact_camera_points @ rotation.T + translation
-                exact_distance = np.hypot(
-                    exact_robot_points[:, 0] - target_x,
-                    exact_robot_points[:, 1] - target_y,
-                )
-                exact_selected = exact_distance <= radius
-                selected_points = exact_robot_points[exact_selected]
-                selected_depths = z_camera[candidate_indexes][exact_selected]
-            else:
-                selected_points = np.empty((0, 3), dtype=np.float64)
-                selected_depths = np.empty((0,), dtype=np.float64)
-        else:
-            selected = radial_distance <= radius
-            selected_points = robot_points[selected]
-            selected_depths = z_camera[selected]
-        if selected_points.shape[0] < int(min_points):
-            nearest = float(np.min(radial_distance)) if radial_distance.size else float("inf")
-            raise CalibrationError(
-                f"放置点 ({target_x:.1f},{target_y:.1f}) 附近仅有 "
-                f"{selected_points.shape[0]}/{int(min_points)} 个深度点；"
-                f"最近点偏差 {nearest:.1f} mm，请检查观察位、遮挡或识别半径"
-            )
-
-        # 用 Z 的 MAD 去掉孔洞边缘和飞点。保留至少 min_points 才采用过滤结果。
-        median_z = float(np.median(selected_points[:, 2]))
-        deviations = np.abs(selected_points[:, 2] - median_z)
-        mad = float(np.median(deviations))
-        if mad > 0:
-            tolerance = max(1.5, 3.5 * 1.4826 * mad)
-            inliers = deviations <= tolerance
-            if int(np.count_nonzero(inliers)) >= int(min_points):
-                selected_points = selected_points[inliers]
-                selected_depths = selected_depths[inliers]
-
-        surface = tuple(float(np.median(selected_points[:, axis])) for axis in range(3))
-        measured_depth = float(np.median(selected_depths))
-        if not all(isfinite(value) for value in (*surface, measured_depth)):
-            raise CalibrationError("放置顶面三维结果为 NaN/Inf")
-        # 顶面本身不是 TCP 目标，允许低于 TCP 软件工作空间下限；真正的释放
-        # TCP Z 会在加上当前工件高度后由状态机单独做完整工作空间校验。
-        return surface, measured_depth, int(selected_points.shape[0])
-
-    def validate_workspace(self, robot_xyz_mm: Sequence[float]) -> None:
-        """校验三轴软件工作空间；模拟配置未填写边界时跳过对应轴。"""
-        if len(robot_xyz_mm) != 3:
-            raise CalibrationError("机器人坐标必须包含 X、Y、Z 三个值")
-        for axis, value in zip(("x", "y", "z"), robot_xyz_mm):
-            number = _number(value, f"robot_{axis}_mm")
-            bounds = self.workspace_mm.get(axis)
-            if bounds is not None and not bounds[0] <= number <= bounds[1]:
-                raise CalibrationError(
-                    f"机器人 {axis.upper()}={number:.2f} mm 超出软件工作空间 "
-                    f"[{bounds[0]:.2f}, {bounds[1]:.2f}]"
-                )
 
     def validate_reference_points(
         self,

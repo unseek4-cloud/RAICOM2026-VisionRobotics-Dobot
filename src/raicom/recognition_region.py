@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Task2/Task3 识别区域的校验、线程安全存储与检测过滤。"""
+"""3D 识别抓取区域的校验、线程安全存储与检测过滤。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, TypeVar
 
 RecognitionRegion = tuple[float, float, float, float]
 FULL_RECOGNITION_REGION: RecognitionRegion = (0.0, 0.0, 1.0, 1.0)
-_SUPPORTED_TASKS = frozenset({"task2", "task3"})
+_SUPPORTED_TASKS = frozenset({"task3"})
 _DetectionT = TypeVar("_DetectionT")
 
 
@@ -59,7 +59,7 @@ def region_contains_pixel(
 
 
 class RecognitionRegionStore:
-    """保存两个任务的区域；UI 与检测工作线程可安全地同时访问。"""
+    """保存 3D 识别区域；UI 与检测工作线程可安全地同时访问。"""
 
     def __init__(self, settings: Any) -> None:
         self._lock = threading.RLock()

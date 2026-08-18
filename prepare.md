@@ -7,6 +7,8 @@
 
 本文档只告诉你“哪里要填、怎么量、按什么顺序测试和运行”。赛题规则、协议原理和系统设计细节请另看 `README.md` 和 `docs/系统设计说明.md`。
 
+> **当前定制版本说明：**任务二已删除，原任务三更名为“3D识别抓取”。真机前填写 `robot.place_poses_mm_deg` 的 X、Y、Rx、Ry、Rz，Z 保持 `null`；执行时 P2.Z 直接复用识别得到的 P1.Z。软件工作空间边界、放置区二次视觉、观察位、接近/抬升/回撤路径均已删除。本文后续若仍出现这些旧名称，属于历史记录，请以本段、`config/settings.yaml` 和 README 的当前协议章节为准。
+
 ## 1. 先看结论：需要你处理的文件
 
 赛前和现场主要需要处理下列位置。
@@ -15,8 +17,7 @@
 |---|---|---|
 | `config/settings.yaml` | 填写视觉、标定、网络、机械臂、吸盘、落料点和任务参数 | 必须 |
 | `dobotstudio/raicom_e6_executor.lua` 顶部 `CFG` | 填写与 `settings.yaml` 一致的 E6 执行参数 | 必须 |
-| `models/task2.pt` | 放入任务二 YOLO 权重 | 必须 |
-| `models/task3.pt` | 放入任务三 YOLO 权重 | 必须 |
+| `models/task3.pt` | 放入七分类 3D识别抓取 OBB 权重 | 必须 |
 | `config/calibration/CaliMatrixData.yaml` | 放入现场 `opencvCalibration.exe` 生成的 EIH 标定文件 | 必须 |
 | Dobot Vision Studio 4.1.2 工程 | 配置任务一识别流程和 TCP 结果输出 | 必须 |
 | `config/calibration/validation_points.csv` | 填入至少 3 个已知点，验证 EIH 矩阵方向和误差 | 必须验证，文件名可自定 |
@@ -69,7 +70,8 @@ DVS 正式输出推荐一行 JSON，并在末尾加换行 `\n`：
 | 配置键 | 怎么填 |
 |---|---|
 | `camera.serial` | 只连一台 D435 可保持 `null`；多台 RealSense 时必须填目标序列号 |
-| `camera.width/height/fps` | 必须与标定、训练和现场运行规格一致；默认 `640×480@30` |
+| `camera.width/height/fps` | D435 RGB 彩色流，主程序默认使用最大 `1920×1080@30` |
+| `camera.depth_width/depth_height/depth_fps` | D435 双目深度流，默认最大 `1280×720@30`；SDK 随后对齐到 RGB 坐标 |
 | `camera.align_depth_to_color` | 真机抓取必须保持 `true` |
 | `camera.depth_min_mm/depth_max_mm` | 按相机到桌面的实际范围设定，不要设得过宽 |
 | `camera.depth_patch_px` | 检测框中心取样区，必须是大于等于3的奇数；小工件可降到5或7 |

@@ -2,13 +2,13 @@
 # 2026 睿抗机器人开发者大赛（机器视觉/越疆）现场配置
 # 文件编码：UTF-8。所有距离统一使用 mm，角度统一使用 degree。
 #
-# 安全原则：占位值使用 null。只要关键项未填写，`python main.py --real` 就会
-# 拒绝启动机械臂。先运行 `python main.py --demo`，再按 README 完成低速真机验证。
+# 占位值使用 null。关键现场项未填写时，`python main.py --real` 会报告配置错误。
 # ============================================================================
 
 application:
-  name: "睿抗2026视觉分拣监控台"
+  name: "3D识别抓取"
   competition_timeout_s: 600       # 规则要求现场自动运行不超过 10 分钟
+  preview_fps: 12                  # 三路 UI 实时预览目标帧率；YOLO 推理慢时以实际速度为准
   log_level: "INFO"
   result_log_jsonl: "logs/results.jsonl"
 
@@ -47,9 +47,13 @@ dvs:
 
 camera:
   serial: null                     # 多台 RealSense 时填写 D435 序列号
-  width: 1280
-  height: 720
+  # D435 最大彩色流；深度传感器最大分辨率不同，必须独立配置后再对齐到 RGB。
+  width: 1920
+  height: 1080
   fps: 30
+  depth_width: 1280
+  depth_height: 720
+  depth_fps: 30
   align_depth_to_color: true
   warmup_frames: 30
   flush_frames_after_motion: 8
@@ -68,22 +72,12 @@ yolo:
   confidence: 0.85
   iou: 0.45
   max_detections: 20
-  use_hsv_color_fallback: true
   chinese_font: "C:/Windows/Fonts/msyh.ttc"
-
-  task2:
-    model: "models/task2.pt"
-    # 留空表示接受该模型输出的全部类别。若模型同时检测其他任务道具，应填写关键字，
-    # 例如 ["cube", "cylinder", "立方体", "圆柱体"]。
-    include_class_keywords: []
-    exclude_class_keywords: []
 
   task3:
     model: "models/task3.pt"
     include_class_keywords: []
     exclude_class_keywords: []
-    # 若任务三按“与已知图案是否一致”分类，在此填已知类别名；null 表示按模型类别分拣。
-    known_label: null
 
 calibration:
   # 比赛现场重新标定后，将 opencvCalibration.exe 生成的文件复制为下列文件名。
@@ -99,11 +93,10 @@ calibration:
   # 必须用 3 个以上已知点验证方向和误差后才允许抓取。
   pose_rotation_order: "zyx"
 
-  # ★现场必填：机械臂固定在拍照位、抓取区空台面时的深度中值。
-  # 该值只计算抓取工件高度；任务三放置区会到目标上方重新识别，绝不复用此高度。
+  # ★现场必填：机械臂固定在拍照位、检测/放置共用空台面时的深度中值。
   table_depth_mm: 398
 
-  # ★现场必填：抓取区无工件，吸盘刚好贴到抓取台面时机械臂 TCP 的 Z。
+  # ★现场必填：吸盘刚好贴到检测/放置共用台面时机械臂 TCP 的 Z。
   robot_table_touch_z_mm: 100.0
 
   # 用户指定的计算式：抓取Z = 台面机器人Z + (空台深度 - 工件中心深度)。
@@ -121,25 +114,16 @@ robot:
   # ★现场必填：相机完成 EIH 标定时使用的同一 Tip/TCP 在固定拍照位的位姿。
   # [X, Y, Z, Rx, Ry, Rz]，单位 mm/degree。
   photo_pose_mm_deg: [160, -60, 430, 180, 0, 0]
-
-  # 第二层软件保护。请根据 E6 实际安装、用户坐标系和低速示教结果填写，不能照抄示例。
-  workspace_mm:
-    x: [155.0, 310.0]
-    y: [-150.0, 135.0]
-    z: [85.0, 435.0]
+  # 判断“当前是否在拍照位”的位置/姿态允许误差，不属于运动工作空间限位。
+  photo_pose_tolerance_mm: 2.0
+  photo_pose_tolerance_deg: 2.0
 
   motion:
-    # Rx/Ry 固定吸盘朝下；Rz=0 是放置回正基准。抓取 Rz 由 OBB+EIH 动态计算。
+    # 抓取姿态：Rx/Ry 固定吸盘朝下；抓取 Rz 由 OBB+EIH 动态计算。
+    # 放置姿态不再自动回正为 0，而是逐工件读取 place_poses_mm_deg。
     orientation_mm_deg: [180.0, 0, 0]
-    z_up_sign: 1                     # ★用户坐标 Z 向上填 1；若现场坐标轴相反填 -1
-    approach_mm: 40.0               # 到抓取点正上方后再直线下降
-    pick_lift_mm: 80.0              # 吸取后 X/Y 不变，Z 抬高距离
-    # 释放后回撤距离；任务三同时用作“释放Z → 低位水平转运Z”的净空距离。
-    release_retract_mm: 80.0
-    # 任务三持件识别放置顶面的绝对 Tip Z。现场实测 Z=417 已不可达，限制为 410：
-    # 吸取后先在低位移动到放置观察位 XY，再仅在该已知可达 XY 垂直升至 410。
-    place_inspection_z_mm: 410.0
-    travel_speed_percent: 20        # 首次真机建议 5~10，验证后逐步提高
+    # P1 与 P2 使用相同 Z，由 DobotStudio Pro 的 MovJ 直接规划 P1→P2。
+    travel_speed_percent: 20
     pick_speed_percent: 10
     acceleration_percent: 20
     settle_ms: 300
@@ -163,78 +147,51 @@ robot:
     pc_server_port: 2006
     reconnect_delay_ms: 2000
 
-  # 任务二仍使用 down_mm。任务三只配置 XY：到目标上方实时识别台面/堆顶 Z，
-  # 再按“顶面 Z + 当前工件高度”释放，所以抓取区与放置区无需同一台面高度。
-  place_points:
-    task2:
-      default: {x_mm: 250, y_mm: 120, down_mm: 80}
-      red:     {x_mm: 250, y_mm: 120, down_mm: 80}
-      blue:    {x_mm: 300, y_mm: 120, down_mm: 80}
-      green:   {x_mm: 250, y_mm: 120, down_mm: 80}
-      yellow:  {x_mm: 250, y_mm: 120, down_mm: 80}
-    task3:
-      default:   {x_mm: 250, y_mm: 120}
-      match:     {x_mm: 250, y_mm: 120}
-      not_match: {x_mm: 250, y_mm: 120}
+  # ★现场必填：七类工件的放置位姿，统一格式 [X, Y, Z, Rx, Ry, Rz]。
+  # Z 必须保持 null；运行时 P2.Z 直接复用识别得到的 P1.Z。
+  # X、Y、Rx、Ry、Rz 必须现场示教填写。
+  place_poses_mm_deg:
+    大圆柱:       [null, null, null, null, null, null]
+    正方体:       [null, null, null, null, null, null]
+    梯形:         [null, null, null, null, null, null]
+    长方体:       [null, null, null, null, null, null]
+    圆柱:         [null, null, null, null, null, null]
+    六棱柱:       [null, null, null, null, null, null]
+    平行四边形:   [null, null, null, null, null, null]
 
 tasks:
-  # 评分验证时所有工件同时出现，程序仍固定按 task1 -> task2 -> task3 顺序执行。
+  # 全流程只包含任务一和 3D识别抓取；原任务二已删除。
   task1:
     enabled: true
     robot_action: "none"            # 规则文件只要求识别/测量并输出
 
-  task2:
+  task3:
     enabled: true
     # UI 可直接拖拽调整；归一化格式 [左, 上, 右, 下]，仅中心点在框内的目标参与识别。
     recognition_region: [0.0, 0.0, 1.0, 1.0]
-    max_objects: 5                    # 单次运行最多分拣几件；现场可改为任意 >=1 的整数
-    candidate_order: "left_to_right" # 可选：left_to_right / confidence / nearest_center
-    route_by: "color"               # color / shape / class
-    detect_timeout_s: 20.0
-    empty_confirm_frames: 8
-    stable_frames: 3
-    stable_center_tolerance_px: 12
-    stable_angle_tolerance_deg: 5.0 # 连续 OBB 角度波动超过此值时不允许抓取
-
-  task3:
-    enabled: true
-    recognition_region: [0.0, 0.0, 1.0, 1.0]
-    max_objects: 5                    # 与任务二独立配置，达到上限即结束本任务
+    max_objects: 7                    # 七类工件，达到上限即结束本任务
     candidate_order: "left_to_right"
-    route_by: "match_or_class"
+    route_by: "class"
     detect_timeout_s: 20.0
     empty_confirm_frames: 8
     stable_frames: 3
     stable_center_tolerance_px: 12
     stable_angle_tolerance_deg: 5.0
-    placement_vision:
-      temporal_samples: 5          # 到放置观察位后连续识别的深度帧数
-      # Z=410 时后续堆顶会比抓取区更靠近相机；仅放置测高使用 250，抓取仍使用 camera.depth_min_mm=300。
-      depth_min_mm: 250.0
-      # ★比赛现场必改：必须在上面的 place_inspection_z_mm 观察位、同一姿态和放置 XY 实测。
-      # 空台时记录 D435 台面深度；再低速示教吸盘刚接触该台面时的 TCP Z。
-      # 当前顶面Z = place_table_touch_z_mm + (place_table_depth_mm - 当前深度)。
-      place_table_depth_mm: 388.0
-      place_table_touch_z_mm: 90.0
-      sample_radius_mm: 8.0        # 在目标机器人 XY 周围取顶面点云的半径
-      min_valid_points: 20
-      max_surface_spread_mm: 4.0   # 多帧顶面 Z 波动超过此值则保持吸盘并停止
-      press_down_mm: 0.5           # 接触位置基础上轻压；首次真机建议设为 0
-      min_descent_clearance_mm: 20.0 # 观察位到动态低位转运高度的最小垂直距离
 
 simulation:
-  # 模拟模式会生成 4 个工件、深度图、DVS 结果和 Lua 完成应答，可完整演示界面。
+  # 模拟模式会生成七类工件、深度图、DVS 结果和 Lua 完成应答，可完整演示界面。
+  # 模拟画面保持轻量；真机仍严格使用上面的 D435 最大 RGB 分辨率。
+  frame_width: 640
+  frame_height: 480
   table_depth_mm: 700.0
   robot_table_touch_z_mm: 100.0
-  # 与抓取台面故意不同，用于验证任务三没有复用抓取台面高度。
-  place_base_robot_z_mm: 90.0
   command_delay_s: 0.15
-  place_points:
-    task2:
-      default: {x_mm: 260.0, y_mm: 120.0, down_mm: 80.0}
-      red:     {x_mm: 230.0, y_mm: 120.0, down_mm: 80.0}
-      blue:    {x_mm: 290.0, y_mm: 120.0, down_mm: 80.0}
-    task3:
-      default:   {x_mm: 250.0, y_mm: 120.0}
-      match:     {x_mm: 250.0, y_mm: 120.0}
-      not_match: {x_mm: 250.0, y_mm: 120.0}
+  # Z 同样由模拟深度识别生成；不同 Rz 用于自动测试放置姿态是否透传。
+  place_poses_mm_deg:
+    大圆柱:       [175.0, 120.0, null, 180.0, 0.0,   0.0]
+    正方体:       [215.0, 120.0, null, 180.0, 0.0,  15.0]
+    梯形:         [255.0, 120.0, null, 180.0, 0.0,  30.0]
+    长方体:       [295.0, 120.0, null, 180.0, 0.0,  45.0]
+    圆柱:         [195.0,  75.0, null, 180.0, 0.0,   0.0]
+    六棱柱:       [245.0,  75.0, null, 180.0, 0.0, -30.0]
+    平行四边形:   [295.0,  75.0, null, 180.0, 0.0, -45.0]

@@ -12,8 +12,7 @@ class TaskState(str, Enum):
     IDLE = "待机"
     INITIALIZING = "初始化"
     TASK1 = "任务一"
-    TASK2 = "任务二"
-    TASK3 = "任务三"
+    TASK3 = "3D识别抓取"
     STOPPING = "停止中"
     COMPLETED = "已完成"
     FAILED = "失败"
@@ -62,7 +61,9 @@ class CameraIntrinsics:
 
 
 @dataclass(slots=True)
-class PickTarget:
+class DirectPlaceTarget:
+    """P1 抓取后以相同 Z 直接移动到 P2 的一次抓放参数。"""
+
     task: str
     object_id: str
     pick_x_mm: float
@@ -71,26 +72,9 @@ class PickTarget:
     pick_rz_deg: float
     place_x_mm: float
     place_y_mm: float
-    place_down_mm: float
-    route_key: str
-
-
-@dataclass(slots=True)
-class StackPlaceTarget:
-    """任务三动态叠放的一次抓取与目标观察参数。"""
-
-    task: str
-    object_id: str
-    pick_x_mm: float
-    pick_y_mm: float
-    pick_z_mm: float
-    pick_rz_deg: float
-    object_height_mm: float
-    place_x_mm: float
-    place_y_mm: float
-    inspection_x_mm: float
-    inspection_y_mm: float
-    inspection_z_mm: float
+    place_rx_deg: float
+    place_ry_deg: float
+    place_rz_deg: float
     route_key: str
 
 

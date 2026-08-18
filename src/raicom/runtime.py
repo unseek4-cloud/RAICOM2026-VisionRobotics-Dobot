@@ -20,7 +20,13 @@ class RuntimeErrorWithContext(RuntimeError):
 
 
 class SystemRuntime:
-    def __init__(self, settings: Settings, real_mode: bool = False):
+    def __init__(
+        self,
+        settings: Settings,
+        real_mode: bool = False,
+        *,
+        enable_live_preview: bool = False,
+    ):
         self.settings = settings
         self.real_mode = real_mode
         self.bus = EventBus()
@@ -34,6 +40,7 @@ class SystemRuntime:
         self.bus.subscribe("dvs_connection", self._on_dvs_connection)
         self.bus.subscribe("robot_connection", self._on_robot_connection)
         self.bus.subscribe("robot_status", self._on_robot_status)
+        self.bus.subscribe("task_state", self._on_task_state)
         self.orchestrator: TaskOrchestrator | None = None
         self.camera: Any = None
         self.dvs: Any = None
@@ -43,6 +50,11 @@ class SystemRuntime:
         self.simulation_world: Any = None
         self._started = False
         self._lock = threading.RLock()
+        self._live_preview_enabled = bool(enable_live_preview)
+        self._live_preview_task = "task3"
+        self._live_preview_state_lock = threading.RLock()
+        self._live_preview_stop = threading.Event()
+        self._live_preview_thread: threading.Thread | None = None
 
     @property
     def is_started(self) -> bool:
@@ -73,21 +85,11 @@ class SystemRuntime:
         phase_names = {
             "idle": "待机",
             "at_photo": "已在拍照位",
-            "above_pick": "前往抓取点上方",
-            "descend_pick": "直线下降抓取",
+            "away_from_photo": "不在拍照位",
+            "move_to_p1": "DobotStudio Pro规划到抓取点P1",
             "vacuum_on": "开启吸盘",
-            "lift_pick": "吸取后垂直抬升",
-            "straighten_rz": "安全高度原地回正 RZ=0°",
-            "transfer_xy": "保持高度水平转运",
-            "descend_place": "直线下降放置",
+            "move_p1_to_p2_same_z": "DobotStudio Pro同Z规划P1→P2",
             "vacuum_off": "释放吸盘",
-            "retract_place": "释放后垂直回撤",
-            "transfer_to_inspection_low": "保持低位高度水平移动到观察XY",
-            "raise_at_inspection_xy": "在观察XY垂直升到观察高度",
-            "at_place_inspection": "已到放置观察位",
-            "lower_at_inspection_xy": "观察XY垂直下降到低位转运高度",
-            "transfer_to_place_low": "保持低位高度水平移动到放置点",
-            "descend_place_visual_z": "按视觉Z垂直下降放置",
             "return_photo": "返回固定拍照位",
         }
         if command_id == "HELLO":
@@ -105,6 +107,41 @@ class SystemRuntime:
         elif status in {"error", "rejected", "busy", "stopped"}:
             code = str(message.get("code", status))
             self._status("robot", f"执行错误：{code}", False)
+
+    def _on_task_state(self, state: str, _detail: str = "") -> None:
+        if state == "3D识别抓取":
+            self.set_live_preview_task("task3")
+
+    def set_live_preview_task(self, task: str) -> None:
+        """设置 UI 实时 YOLO 图使用 3D 识别抓取模型。"""
+
+        if task != "task3":
+            raise ValueError("实时预览只支持 3D识别抓取（task3）")
+        with self._live_preview_state_lock:
+            self._live_preview_task = task
+
+    def return_to_photo(self) -> bool:
+        """让真机自动回拍照位，并用实机当前位姿复核到位状态。"""
+
+        if not self._started or self.robot is None:
+            raise RuntimeErrorWithContext("系统尚未初始化")
+        if self.real_mode and not bool(getattr(self.robot, "is_connected", False)):
+            raise RuntimeErrorWithContext("DobotStudio Pro Lua 尚未连接")
+
+        self.bus.emit("task_state", "返回拍照位", "正在调用 DobotStudio Pro 运动规划")
+        reply = self.robot.go_photo()
+        if reply.status not in ("done", "home", "ok"):
+            raise RuntimeErrorWithContext(reply.message or f"回拍照位失败：{reply.status}")
+
+        check = self.robot.is_at_photo()
+        if check.status not in ("done", "ok"):
+            raise RuntimeErrorWithContext(check.message or f"拍照位复核失败：{check.status}")
+        if check.raw.get("at_photo") is not True:
+            pose = check.raw.get("current_pose", "未知")
+            raise RuntimeErrorWithContext(f"运动完成但实机位姿仍不在拍照位：{pose}")
+
+        self.bus.emit("task_state", "待机", "机械臂已自动回到拍照位")
+        return True
 
     def start(self) -> bool:
         with self._lock:
@@ -150,6 +187,7 @@ class SystemRuntime:
                     simulation_world=self.simulation_world,
                 )
                 self._started = True
+                self._start_live_preview()
                 self._status("runtime", "已初始化", True)
                 self.bus.emit("task_state", "待机", "系统已就绪；真机运行前请确认实体急停")
                 self.log.info("系统初始化完成")
@@ -178,9 +216,6 @@ class SystemRuntime:
             self.dvs = DVSReceiver(self.settings, self.bus, self.log.getChild("dvs"))
             self.robot = LuaBridgeServer(self.settings, self.bus, self.log.getChild("robot"))
             self.detectors = {
-                "task2": YoloDetector(
-                    self.settings, "task2", self.log.getChild("yolo.task2")
-                ),
                 "task3": YoloDetector(
                     self.settings, "task3", self.log.getChild("yolo.task3")
                 ),
@@ -200,12 +235,6 @@ class SystemRuntime:
                 self.simulation_world,
             )
             self.detectors = {
-                "task2": MockDetector(
-                    self.settings,
-                    "task2",
-                    self.simulation_world,
-                    self.log.getChild("yolo.mock.task2"),
-                ),
                 "task3": MockDetector(
                     self.settings,
                     "task3",
@@ -214,8 +243,73 @@ class SystemRuntime:
                 ),
             }
 
-        self._status("task2_model", "已加载" if self.real_mode else "模拟模型", True)
         self._status("task3_model", "已加载" if self.real_mode else "模拟模型", True)
+
+    def _start_live_preview(self) -> None:
+        if not self._live_preview_enabled:
+            return
+        if self._live_preview_thread is not None and self._live_preview_thread.is_alive():
+            return
+        self._live_preview_stop.clear()
+        self._live_preview_thread = threading.Thread(
+            target=self._live_preview_loop,
+            name="ui-live-vision",
+            daemon=True,
+        )
+        self._live_preview_thread.start()
+
+    def _live_preview_loop(self) -> None:
+        from .vision.live_display import build_live_vision_frame
+
+        preview_fps = max(
+            1.0,
+            min(30.0, float(self.settings.get("application.preview_fps", 12.0))),
+        )
+        interval_s = 1.0 / preview_fps
+        depth_min = float(self.settings.get("camera.depth_min_mm", 300.0))
+        depth_max = float(self.settings.get("camera.depth_max_mm", 1500.0))
+        last_warning = 0.0
+
+        while not self._live_preview_stop.is_set():
+            started_at = time.monotonic()
+            try:
+                with self._live_preview_state_lock:
+                    task = self._live_preview_task
+                camera = self.camera
+                detector = self.detectors.get(task)
+                calibration = self.calibration
+                if camera is None or detector is None or calibration is None:
+                    break
+                bundle = camera.get_frame(timeout_ms=1000)
+                live_frame = build_live_vision_frame(
+                    bundle,
+                    task=task,
+                    detector=detector,
+                    camera=camera,
+                    calibration=calibration,
+                    recognition_regions=self.recognition_regions,
+                    depth_min_mm=depth_min,
+                    depth_max_mm=depth_max,
+                )
+                self.bus.emit("vision_frame", live_frame)
+            except Exception as exc:
+                if self._live_preview_stop.is_set():
+                    break
+                now = time.monotonic()
+                if now - last_warning >= 3.0:
+                    self.log.warning("实时三路视觉刷新失败：%s", exc)
+                    last_warning = now
+            elapsed = time.monotonic() - started_at
+            # 即使 CPU 推理慢于目标帧率，也主动给任务状态机留出取帧/推理窗口。
+            self._live_preview_stop.wait(max(0.01, interval_s - elapsed))
+
+    def _stop_live_preview(self) -> None:
+        self._live_preview_stop.set()
+        thread, self._live_preview_thread = self._live_preview_thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=10.0)
+            if thread.is_alive():
+                self.log.warning("实时视觉线程未在 10 秒内退出")
 
     def stop(self) -> None:
         with self._lock:
@@ -227,6 +321,7 @@ class SystemRuntime:
             self._status("runtime", "已停止", False)
 
     def _stop_components(self) -> None:
+        self._stop_live_preview()
         for component, key in (
             (self.camera, "camera"),
             (self.dvs, "dvs"),

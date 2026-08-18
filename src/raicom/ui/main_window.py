@@ -24,6 +24,7 @@ from ..runtime import SystemRuntime
 class UiSignals(QtCore.QObject):
     log = QtCore.pyqtSignal(str)
     frame = QtCore.pyqtSignal(object)
+    vision_frame = QtCore.pyqtSignal(object)
     task_state = QtCore.pyqtSignal(str, str)
     component_status = QtCore.pyqtSignal(str, str, bool)
     result_row = QtCore.pyqtSignal(dict)
@@ -34,20 +35,13 @@ class UiSignals(QtCore.QObject):
     worker_done = QtCore.pyqtSignal(str, bool, str)
 
 
-class RecognitionRegionLabel(QtWidgets.QLabel):
-    """按真实图像比例显示画面，并支持鼠标拖拽绘制归一化识别框。"""
-
-    region_changed = QtCore.pyqtSignal(object)
+class AspectRatioImageLabel(QtWidgets.QLabel):
+    """保持原图比例绘制实时画面，空余区域自动留黑。"""
 
     def __init__(self, text: str = "", parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(text, parent)
         self._frame_pixmap = QtGui.QPixmap()
         self._source_size = QtCore.QSize()
-        self._region: RecognitionRegion = FULL_RECOGNITION_REGION
-        self._drag_start: QtCore.QPointF | None = None
-        self._drag_end: QtCore.QPointF | None = None
-        self._drag_original: RecognitionRegion | None = None
-        self.setMouseTracking(True)
 
     @property
     def source_size(self) -> QtCore.QSize:
@@ -57,10 +51,6 @@ class RecognitionRegionLabel(QtWidgets.QLabel):
         self._frame_pixmap = QtGui.QPixmap.fromImage(image)
         self._source_size = image.size()
         self.setText("")
-        self.update()
-
-    def set_region(self, region: RecognitionRegion) -> None:
-        self._region = validate_recognition_region(region)
         self.update()
 
     def _image_rect(self) -> QtCore.QRectF:
@@ -79,6 +69,37 @@ class RecognitionRegionLabel(QtWidgets.QLabel):
             width,
             height,
         )
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self._frame_pixmap.isNull():
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(
+            self._image_rect(),
+            self._frame_pixmap,
+            QtCore.QRectF(self._frame_pixmap.rect()),
+        )
+        painter.end()
+
+
+class RecognitionRegionLabel(AspectRatioImageLabel):
+    """按真实图像比例显示 YOLO 画面，并支持鼠标拖拽识别框。"""
+
+    region_changed = QtCore.pyqtSignal(object)
+
+    def __init__(self, text: str = "", parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._region: RecognitionRegion = FULL_RECOGNITION_REGION
+        self._drag_start: QtCore.QPointF | None = None
+        self._drag_end: QtCore.QPointF | None = None
+        self._drag_original: RecognitionRegion | None = None
+        self.setMouseTracking(True)
+
+    def set_region(self, region: RecognitionRegion) -> None:
+        self._region = validate_recognition_region(region)
+        self.update()
 
     def _region_rect(self, image_rect: QtCore.QRectF) -> QtCore.QRectF:
         x1, y1, x2, y2 = self._region
@@ -116,14 +137,7 @@ class RecognitionRegionLabel(QtWidgets.QLabel):
         if self._frame_pixmap.isNull():
             return
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
         image_rect = self._image_rect()
-        painter.drawPixmap(
-            image_rect,
-            self._frame_pixmap,
-            QtCore.QRectF(self._frame_pixmap.rect()),
-        )
-
         region_rect = self._region_rect(image_rect)
         outside = QtGui.QPainterPath()
         outside.addRect(image_rect)
@@ -197,20 +211,26 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.settings = settings
         self.real_mode = real_mode
-        self.runtime = SystemRuntime(settings, real_mode=real_mode)
+        self.runtime = SystemRuntime(
+            settings,
+            real_mode=real_mode,
+            enable_live_preview=True,
+        )
         self._recognition_regions = {
-            task: self.runtime.recognition_regions.get(task) for task in ("task2", "task3")
+            "task3": self.runtime.recognition_regions.get("task3")
         }
         self.signals = UiSignals()
         self._busy = False
         self._initialized = False
         self._timer_deadline: float | None = None
-        self._completed_counts = {"任务二": 0, "任务三": 0}
+        self._completed_counts = {"3D识别抓取": 0}
         self._alarm_count = 0
+        self._last_live_frame_at: float | None = None
+        self._live_fps = 0.0
 
         self.setWindowTitle(str(settings.get("application.name")))
-        self.resize(1480, 900)
-        self.setMinimumSize(1180, 760)
+        self.resize(1560, 980)
+        self.setMinimumSize(1280, 880)
         self.setFont(QtGui.QFont("Microsoft YaHei UI", 10))
         self._build_ui()
         self._wire_events()
@@ -229,7 +249,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         header = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
-        title = QtWidgets.QLabel("睿抗 2026 · 视觉引导柔性分拣系统")
+        title = QtWidgets.QLabel("3D识别抓取")
         title.setObjectName("title")
         subtitle = QtWidgets.QLabel("Dobot Vision Studio · YOLO · RealSense D435 · Dobot E6")
         subtitle.setObjectName("subtitle")
@@ -266,18 +286,56 @@ class MainWindow(QtWidgets.QMainWindow):
         video_header.addStretch(1)
         video_header.addWidget(self.frame_info)
         video_layout.addLayout(video_header)
-        self.video = RecognitionRegionLabel("尚未收到图像")
-        self.video.setAlignment(QtCore.Qt.AlignCenter)
-        self.video.setMinimumSize(700, 480)
-        self.video.setObjectName("video")
-        video_layout.addWidget(self.video, 1)
+
+        def make_feed_panel(title_text: str, image_widget: QtWidgets.QWidget) -> QtWidgets.QFrame:
+            panel = QtWidgets.QFrame()
+            panel.setObjectName("feedPanel")
+            layout = QtWidgets.QVBoxLayout(panel)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setSpacing(5)
+            title_label = QtWidgets.QLabel(title_text)
+            title_label.setObjectName("feedTitle")
+            layout.addWidget(title_label)
+            layout.addWidget(image_widget, 1)
+            return panel
+
+        feeds = QtWidgets.QGridLayout()
+        feeds.setContentsMargins(0, 0, 0, 0)
+        feeds.setHorizontalSpacing(8)
+        feeds.setVerticalSpacing(8)
+
+        self.rgb_video = AspectRatioImageLabel("等待 RGB 彩色流")
+        self.rgb_video.setAlignment(QtCore.Qt.AlignCenter)
+        self.rgb_video.setMinimumSize(310, 165)
+        self.rgb_video.setObjectName("rgbVideo")
+        feeds.addWidget(make_feed_panel("RGB 彩色图", self.rgb_video), 0, 0)
+
+        self.depth_video = AspectRatioImageLabel("等待对齐深度流")
+        self.depth_video.setAlignment(QtCore.Qt.AlignCenter)
+        self.depth_video.setMinimumSize(310, 165)
+        self.depth_video.setObjectName("depthVideo")
+        feeds.addWidget(make_feed_panel("Depth 深度图（伪彩色）", self.depth_video), 0, 1)
+
+        self.yolo_video = RecognitionRegionLabel("等待 YOLO 实时识别")
+        self.yolo_video.setAlignment(QtCore.Qt.AlignCenter)
+        self.yolo_video.setMinimumSize(650, 280)
+        self.yolo_video.setObjectName("yoloVideo")
+        self.yolo_feed_title = "YOLO 实时识别图"
+        feeds.addWidget(make_feed_panel(self.yolo_feed_title, self.yolo_video), 1, 0, 1, 2)
+        feeds.setColumnStretch(0, 1)
+        feeds.setColumnStretch(1, 1)
+        feeds.setRowStretch(0, 2)
+        feeds.setRowStretch(1, 3)
+        video_layout.addLayout(feeds, 1)
+
+        # 兼容已有界面测试/扩展代码；识别区域只属于 YOLO 画面。
+        self.video = self.yolo_video
 
         region_bar = QtWidgets.QHBoxLayout()
         region_bar.addWidget(QtWidgets.QLabel("识别区域："))
         self.region_task = QtWidgets.QComboBox()
-        self.region_task.addItem("任务二", "task2")
-        self.region_task.addItem("任务三", "task3")
-        self.region_task.setToolTip("Task2、Task3 的识别框相互独立")
+        self.region_task.addItem("3D识别抓取", "task3")
+        self.region_task.setToolTip("七类工件共用此识别区域")
         region_bar.addWidget(self.region_task)
         self.region_value = QtWidgets.QLabel()
         self.region_value.setObjectName("regionValue")
@@ -292,7 +350,7 @@ class MainWindow(QtWidgets.QMainWindow):
         region_hint.setObjectName("muted")
         region_hint.setWordWrap(True)
         video_layout.addWidget(region_hint)
-        self.video.set_region(self._recognition_regions["task2"])
+        self.video.set_region(self._recognition_regions["task3"])
         self._update_region_value()
         upper.addWidget(video_panel)
 
@@ -308,8 +366,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("runtime", "主程序"),
             ("dvs", "DVS TCP"),
             ("camera", "D435 相机"),
-            ("task2_model", "任务二模型"),
-            ("task3_model", "任务三模型"),
+            ("task3_model", "3D识别抓取模型"),
             ("robot", "DobotStudio脚本"),
         ]
         for row, (key, text) in enumerate(names):
@@ -337,6 +394,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_progress()
         right_layout.addWidget(state_box)
 
+        live_box = QtWidgets.QGroupBox("实时识别信息")
+        live_layout = QtWidgets.QVBoxLayout(live_box)
+        self.live_summary = QtWidgets.QLabel("等待三路实时画面")
+        self.live_summary.setObjectName("liveSummary")
+        self.live_summary.setWordWrap(True)
+        self.live_detections = QtWidgets.QPlainTextEdit()
+        self.live_detections.setReadOnly(True)
+        self.live_detections.setMaximumHeight(105)
+        self.live_detections.setPlaceholderText("名称、置信度、表面深度和物体高度将在此更新")
+        live_layout.addWidget(self.live_summary)
+        live_layout.addWidget(self.live_detections)
+        right_layout.addWidget(live_box)
+
         task1_box = QtWidgets.QGroupBox("任务一 · DVS测量/二维码/字符")
         task1_layout = QtWidgets.QVBoxLayout(task1_box)
         self.task1_text = QtWidgets.QPlainTextEdit()
@@ -350,20 +420,21 @@ class MainWindow(QtWidgets.QMainWindow):
         grid = QtWidgets.QGridLayout(controls)
         self.btn_check = QtWidgets.QPushButton("系统自检")
         self.btn_init = QtWidgets.QPushButton("初始化系统")
+        self.btn_go_photo = QtWidgets.QPushButton("自动回到拍照位")
         self.btn_task1 = QtWidgets.QPushButton("运行任务一")
-        self.btn_task2 = QtWidgets.QPushButton("运行任务二")
-        self.btn_task3 = QtWidgets.QPushButton("运行任务三")
-        self.btn_all = QtWidgets.QPushButton("全流程自动运行")
+        self.btn_task3 = QtWidgets.QPushButton("运行3D识别抓取")
+        self.btn_all = QtWidgets.QPushButton("任务一 + 3D识别抓取")
         self.btn_stop = QtWidgets.QPushButton("停止任务（非物理急停）")
         self.btn_all.setObjectName("primaryButton")
         self.btn_stop.setObjectName("stopButton")
+        self.btn_go_photo.setVisible(self.real_mode)
         grid.addWidget(self.btn_check, 0, 0)
         grid.addWidget(self.btn_init, 0, 1)
-        grid.addWidget(self.btn_task1, 1, 0)
-        grid.addWidget(self.btn_task2, 1, 1)
-        grid.addWidget(self.btn_task3, 2, 0)
-        grid.addWidget(self.btn_all, 2, 1)
-        grid.addWidget(self.btn_stop, 3, 0, 1, 2)
+        grid.addWidget(self.btn_go_photo, 1, 0, 1, 2)
+        grid.addWidget(self.btn_task1, 2, 0)
+        grid.addWidget(self.btn_task3, 2, 1)
+        grid.addWidget(self.btn_all, 3, 0, 1, 2)
+        grid.addWidget(self.btn_stop, 4, 0, 1, 2)
         right_layout.addWidget(controls)
 
         safety = QtWidgets.QLabel(
@@ -373,13 +444,18 @@ class MainWindow(QtWidgets.QMainWindow):
         safety.setWordWrap(True)
         right_layout.addWidget(safety)
         right_layout.addStretch(1)
-        upper.addWidget(right)
+        right_scroll = QtWidgets.QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        right_scroll.setWidget(right)
+        upper.addWidget(right_scroll)
         upper.setStretchFactor(0, 7)
         upper.setStretchFactor(1, 4)
 
         lower = QtWidgets.QTabWidget()
         root.addWidget(lower, 2)
-        self.result_table = QtWidgets.QTableWidget(0, 9)
+        self.result_table = QtWidgets.QTableWidget(0, 10)
         self.result_table.setHorizontalHeaderLabels(
             [
                 "任务",
@@ -388,6 +464,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "置信度",
                 "像素",
                 "深度(mm)",
+                "高度(mm)",
                 "机器人XYZ(mm)",
                 "角度/RZ(°)",
                 "状态",
@@ -399,8 +476,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.result_table.verticalHeader().setVisible(False)
         header_view = self.result_table.horizontalHeader()
         header_view.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
-        header_view.setSectionResizeMode(8, QtWidgets.QHeaderView.Stretch)
+        header_view.setSectionResizeMode(7, QtWidgets.QHeaderView.Stretch)
+        header_view.setSectionResizeMode(9, QtWidgets.QHeaderView.Stretch)
         lower.addTab(self.result_table, "识别与抓放结果")
 
         self.log_text = QtWidgets.QPlainTextEdit()
@@ -410,12 +487,14 @@ class MainWindow(QtWidgets.QMainWindow):
         lower.addTab(self.log_text, "运行日志")
 
         self._set_task_buttons(False)
+        self.btn_go_photo.setEnabled(False)
         self.btn_stop.setEnabled(False)
 
     def _wire_events(self) -> None:
         bus = self.runtime.bus
         bus.subscribe("log", self.signals.log.emit)
         bus.subscribe("frame", self.signals.frame.emit)
+        bus.subscribe("vision_frame", self.signals.vision_frame.emit)
         bus.subscribe("task_state", self.signals.task_state.emit)
         bus.subscribe("component_status", self.signals.component_status.emit)
         bus.subscribe("result_row", self.signals.result_row.emit)
@@ -426,6 +505,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.signals.log.connect(self._append_log)
         self.signals.frame.connect(self._show_frame)
+        self.signals.vision_frame.connect(self._show_vision_frame)
         self.signals.task_state.connect(self._show_state)
         self.signals.component_status.connect(self._show_component)
         self.signals.result_row.connect(self._add_result_row)
@@ -437,13 +517,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_check.clicked.connect(self._check_environment)
         self.btn_init.clicked.connect(self._initialize)
+        self.btn_go_photo.clicked.connect(self._go_photo)
         self.btn_task1.clicked.connect(lambda: self._run_task("task1"))
-        self.btn_task2.clicked.connect(lambda: self._run_task("task2"))
         self.btn_task3.clicked.connect(lambda: self._run_task("task3"))
         self.btn_all.clicked.connect(lambda: self._run_task("all"))
         self.btn_stop.clicked.connect(self._stop_task)
         self.region_task.currentIndexChanged.connect(self._region_task_changed)
-        self.video.region_changed.connect(self._region_drawn)
+        self.yolo_video.region_changed.connect(self._region_drawn)
         self.btn_region_full.clicked.connect(self._reset_region)
 
     def _apply_style(self) -> None:
@@ -456,11 +536,14 @@ class MainWindow(QtWidgets.QMainWindow):
             QLabel#realBadge { background:#ffe6d9; color:#a33b16; border-radius:12px; padding:7px 12px; font-weight:700; }
             QLabel#timer { background:#102a43; color:white; border-radius:8px; padding:7px 12px; font-size:17px; font-weight:700; }
             QFrame#panel, QGroupBox { background:white; border:1px solid #d9e2ec; border-radius:8px; }
+            QFrame#feedPanel { background:#f8fafc; border:1px solid #d9e2ec; border-radius:6px; }
             QGroupBox { margin-top:10px; padding-top:10px; font-weight:700; }
             QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }
             QLabel#sectionTitle { font-size:16px; font-weight:700; }
-            QLabel#video { background:#0c141d; color:#8fa3b7; border:1px solid #263746; border-radius:5px; }
+            QLabel#feedTitle { color:#334e68; font-weight:700; }
+            QLabel#rgbVideo, QLabel#depthVideo, QLabel#yoloVideo { background:#0c141d; color:#8fa3b7; border:1px solid #263746; border-radius:4px; }
             QLabel#regionValue { color:#16784b; font-weight:700; }
+            QLabel#liveSummary { color:#0b63ce; font-weight:700; }
             QLabel#stateLabel { font-size:22px; font-weight:700; color:#0b63ce; }
             QLabel#statusOn { color:#16784b; font-weight:700; }
             QLabel#statusOff { color:#8b99a8; }
@@ -482,7 +565,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _set_task_buttons(self, enabled: bool) -> None:
-        for button in (self.btn_task1, self.btn_task2, self.btn_task3, self.btn_all):
+        for button in (self.btn_task1, self.btn_task3, self.btn_all):
             button.setEnabled(enabled and not self._busy)
 
     def _run_background(self, name: str, function: Callable[[], Any]) -> None:
@@ -492,6 +575,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._busy = True
         self.btn_init.setEnabled(False)
         self.btn_check.setEnabled(False)
+        self.btn_go_photo.setEnabled(False)
         self._set_task_buttons(False)
         self.btn_stop.setEnabled(name.startswith("task:"))
 
@@ -519,17 +603,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def _initialize(self) -> None:
         self._run_background("initialize", self.runtime.start)
 
+    def _go_photo(self) -> None:
+        if not self._initialized:
+            QtWidgets.QMessageBox.warning(self, "尚未初始化", "请先点击“初始化系统”。")
+            return
+        self._run_background("go_photo", self.runtime.return_to_photo)
+
     def _run_task(self, task: str) -> None:
         if not self._initialized:
             QtWidgets.QMessageBox.warning(self, "尚未初始化", "请先点击“初始化系统”。")
             return
         if task == "all":
-            self._completed_counts = {"任务二": 0, "任务三": 0}
+            self._completed_counts = {"3D识别抓取": 0}
             self._alarm_count = 0
             self.result_table.setRowCount(0)
             self.task1_text.clear()
             self._refresh_progress()
-        elif task in ("task2", "task3"):
+        elif task == "task3":
             self._select_region_task(task)
         self._run_background(f"task:{task}", lambda: self.runtime.orchestrator.run(task))
 
@@ -546,18 +636,97 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(object)
     def _show_frame(self, bgr: object) -> None:
-        if not isinstance(bgr, np.ndarray) or bgr.ndim != 3:
+        """兼容初始化和旧事件生产者；实时 UI 使用 ``_show_vision_frame``。"""
+
+        # 首个三路同步帧到达后，忽略任务状态机的旧单图事件，避免其短暂覆盖
+        # 含物体高度的 YOLO 实时图。
+        if self._last_live_frame_at is not None:
             return
-        if bgr.shape[2] == 3:
-            rgb = np.ascontiguousarray(bgr[:, :, ::-1])
-            image = QtGui.QImage(
-                rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QtGui.QImage.Format_RGB888
-            ).copy()
-        else:
+        image = self._qimage_from_bgr(bgr)
+        if image is None:
             return
-        self.video.set_frame(image)
+        array = np.asarray(bgr)
+        self.yolo_video.set_frame(image)
         self._update_region_value()
-        self.frame_info.setText(f"{bgr.shape[1]}×{bgr.shape[0]} · {time.strftime('%H:%M:%S')}")
+        self.frame_info.setText(
+            f"{array.shape[1]}×{array.shape[0]} · {time.strftime('%H:%M:%S')}"
+        )
+
+    @staticmethod
+    def _qimage_from_bgr(bgr: object) -> QtGui.QImage | None:
+        if not isinstance(bgr, np.ndarray) or bgr.ndim != 3:
+            return None
+        if bgr.shape[2] != 3:
+            return None
+        rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+        return QtGui.QImage(
+            rgb.data,
+            rgb.shape[1],
+            rgb.shape[0],
+            rgb.strides[0],
+            QtGui.QImage.Format_RGB888,
+        ).copy()
+
+    @QtCore.pyqtSlot(object)
+    def _show_vision_frame(self, frame: object) -> None:
+        color = getattr(frame, "color_bgr", None)
+        depth = getattr(frame, "depth_bgr", None)
+        yolo = getattr(frame, "yolo_bgr", None)
+        color_image = self._qimage_from_bgr(color)
+        depth_image = self._qimage_from_bgr(depth)
+        yolo_image = self._qimage_from_bgr(yolo)
+        if color_image is None or depth_image is None or yolo_image is None:
+            return
+
+        self.rgb_video.set_frame(color_image)
+        self.depth_video.set_frame(depth_image)
+        self.yolo_video.set_frame(yolo_image)
+        self._update_region_value()
+
+        now = time.monotonic()
+        if self._last_live_frame_at is not None and now > self._last_live_frame_at:
+            instant_fps = 1.0 / (now - self._last_live_frame_at)
+            self._live_fps = (
+                instant_fps
+                if self._live_fps <= 0.0
+                else self._live_fps * 0.8 + instant_fps * 0.2
+            )
+        self._last_live_frame_at = now
+
+        color_array = np.asarray(color)
+        depth_array = np.asarray(depth)
+        task_text = "3D识别抓取"
+        detections = tuple(getattr(frame, "detections", ()))
+        self.frame_info.setText(
+            f"RGB {color_array.shape[1]}×{color_array.shape[0]} · "
+            f"Depth {depth_array.shape[1]}×{depth_array.shape[0]} · "
+            f"{self._live_fps:.1f} FPS"
+        )
+        self.live_summary.setText(
+            f"{task_text}模型 · 当前 {len(detections)} 个目标 · "
+            f"高度=台面深度−表面深度"
+        )
+        lines: list[str] = []
+        for index, detection in enumerate(detections, start=1):
+            extra = getattr(detection, "extra", {})
+            height_mm = extra.get("object_height_mm") if isinstance(extra, dict) else None
+            height_text = (
+                f"{float(height_mm):.1f} mm"
+                if isinstance(height_mm, (int, float)) and math.isfinite(float(height_mm))
+                else "无效"
+            )
+            surface = getattr(detection, "depth_mm", None)
+            surface_text = (
+                f"{float(surface):.1f} mm"
+                if isinstance(surface, (int, float)) and math.isfinite(float(surface))
+                else "无效"
+            )
+            lines.append(
+                f"{index}. {getattr(detection, 'class_name', '未知')}  "
+                f"置信度 {float(getattr(detection, 'confidence', 0.0)):.2f}  "
+                f"表面 {surface_text}  高度 {height_text}"
+            )
+        self.live_detections.setPlainText("\n".join(lines))
 
     def _selected_region_task(self) -> str:
         return str(self.region_task.currentData())
@@ -570,7 +739,8 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(int)
     def _region_task_changed(self, _index: int) -> None:
         task = self._selected_region_task()
-        self.video.set_region(self._recognition_regions[task])
+        self.runtime.set_live_preview_task(task)
+        self.yolo_video.set_region(self._recognition_regions[task])
         self._update_region_value()
 
     @QtCore.pyqtSlot(object)
@@ -578,10 +748,9 @@ class MainWindow(QtWidgets.QMainWindow):
         task = self._selected_region_task()
         validated = self.runtime.recognition_regions.set(task, region)
         self._recognition_regions[task] = validated
-        self.video.set_region(validated)
+        self.yolo_video.set_region(validated)
         self._update_region_value()
-        task_text = "任务二" if task == "task2" else "任务三"
-        self.runtime.log.info("%s 识别区域已调整为 %s", task_text, self.region_value.text())
+        self.runtime.log.info("3D识别抓取区域已调整为 %s", self.region_value.text())
 
     def _reset_region(self) -> None:
         self._region_drawn(FULL_RECOGNITION_REGION)
@@ -589,7 +758,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_region_value(self) -> None:
         task = self._selected_region_task()
         x1, y1, x2, y2 = self._recognition_regions[task]
-        source = self.video.source_size
+        source = self.yolo_video.source_size
         if source.isEmpty():
             self.region_value.setText(
                 f"{x1:.3f}, {y1:.3f} → {x2:.3f}, {y2:.3f}（等待画面）"
@@ -604,9 +773,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_state(self, state: str, detail: str) -> None:
         self.state_label.setText(state)
         self.state_detail.setText(detail or "-")
-        if state == "任务二":
-            self._select_region_task("task2")
-        elif state == "任务三":
+        if state == "3D识别抓取":
             self._select_region_task("task3")
 
     @QtCore.pyqtSlot(str, str, bool)
@@ -628,6 +795,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "置信度",
             "像素",
             "深度(mm)",
+            "高度(mm)",
             "机器人XYZ(mm)",
             "角度/RZ(°)",
             "状态",
@@ -636,7 +804,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.result_table.insertRow(index)
         for column, key in enumerate(labels):
             item = QtWidgets.QTableWidgetItem(str(row.get(key, "-")))
-            if column in (0, 2, 3, 4, 5):
+            if column in (0, 2, 3, 4, 5, 6):
                 item.setTextAlignment(QtCore.Qt.AlignCenter)
             self.result_table.setItem(index, column, item)
         self.result_table.scrollToBottom()
@@ -647,11 +815,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_progress()
 
     def _refresh_progress(self) -> None:
-        maximum2 = self.settings.task_max_objects("task2")
         maximum3 = self.settings.task_max_objects("task3")
         self.progress_label.setText(
-            f"抓放进度：任务二 {self._completed_counts['任务二']}/{maximum2}（上限）  ·  "
-            f"任务三 {self._completed_counts['任务三']}/{maximum3}（上限）  ·  "
+            f"抓放进度：{self._completed_counts['3D识别抓取']}/{maximum3}（上限）  ·  "
             f"异常 {self._alarm_count}"
         )
 
@@ -697,6 +863,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status_labels["runtime"].setText("● 已初始化")
             self.status_labels["runtime"].setObjectName("statusOn")
         self._set_task_buttons(self._initialized)
+        self.btn_go_photo.setEnabled(self.real_mode and self._initialized)
         if message:
             QtWidgets.QMessageBox.critical(self, "操作失败", message)
 

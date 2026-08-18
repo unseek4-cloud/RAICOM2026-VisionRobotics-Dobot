@@ -10,6 +10,7 @@ from raicom.vision.dvs_tcp import (
     MockDVSReceiver,
     parse_dvs_line,
 )
+from raicom.vision.live_display import LiveVisionFrame, colorize_depth_mm
 from raicom.vision.realsense_camera import (
     CameraError,
     DepthMeasurementError,
@@ -29,6 +30,7 @@ __all__ = [
     "DepthMeasurementError",
     "DetectorError",
     "FrameBundle",
+    "LiveVisionFrame",
     "MockCamera",
     "MockDVS",
     "MockDVSReceiver",
@@ -36,5 +38,6 @@ __all__ = [
     "RealSenseCamera",
     "SimulationWorld",
     "YoloDetector",
+    "colorize_depth_mm",
     "parse_dvs_line",
 ]

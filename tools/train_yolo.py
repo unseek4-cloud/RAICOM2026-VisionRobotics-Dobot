@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""在比赛电脑本地训练任务二/任务三 YOLO-OBB 旋转框模型。
+"""在比赛电脑本地训练 3D 识别抓取 YOLO-OBB 旋转框模型。
 
 脚本不会自动联网下载权重。比赛前请把可离线使用的基础权重放到本地，
 现场完成拍照、标注和 data.yaml 后再运行本工具。训练成功时把 best.pt 复制到
-主程序约定的 ``models/task2.pt`` 或 ``models/task3.pt``。
+主程序约定的 ``models/task3.pt``。
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ _TRANSIENT_WINERRORS = {5, 32, 33, 87}
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="睿抗任务二/三 YOLO 离线训练工具")
-    parser.add_argument("--task", choices=("task2", "task3"), required=True, help="模型用途")
+    parser = argparse.ArgumentParser(description="3D识别抓取 YOLO 离线训练工具")
+    parser.add_argument("--task", choices=("task3",), default="task3", help="模型用途")
     parser.add_argument("--data", type=Path, required=True, help="Ultralytics 数据集 data.yaml")
     parser.add_argument(
         "--base",
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RUNS_DIR,
         help=f"训练过程目录；默认 {DEFAULT_RUNS_DIR}",
     )
-    parser.add_argument("--name", default=None, help="训练名称；默认 task2_field/task3_field")
+    parser.add_argument("--name", default=None, help="训练名称；默认 task3_field")
     parser.add_argument("--patience", type=int, default=20, help="早停等待轮数")
     parser.add_argument(
         "--skip-test",

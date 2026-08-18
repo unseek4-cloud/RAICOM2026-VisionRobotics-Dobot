@@ -2,7 +2,7 @@
 """使用 Intel RealSense D435 采集 YOLO 图片并划分数据集。
 
 界面固定采集 1280×720、30 FPS 的 RGB 彩色流。空格键或“拍照”按钮把 JPG
-原图保存到当前任务的 ``datasets/<task>/photo``。完成 YOLO 标注后，把与图片
+原图保存到 ``datasets/task3/photo``。完成 YOLO 标注后，把与图片
 同名的 OBB 四点 ``.txt`` 标签放在 ``photo`` 中，再用“一键划分”按 70%/20%/10% 复制到
 train/val/test。原始照片和原始标签不会被移动或删除。
 """
@@ -22,7 +22,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASETS_ROOT = PROJECT_ROOT / "datasets"
-TASKS = ("task2", "task3")
+TASKS = ("task3",)
 SPLITS = ("train", "val", "test")
 SPLIT_RATIOS = (0.70, 0.20, 0.10)
 CAPTURE_WIDTH = 1280
@@ -57,7 +57,7 @@ def _validate_task_root(task_root: Path) -> tuple[Path, str]:
     root = task_root.expanduser().resolve()
     task = root.name.lower()
     if task not in TASKS:
-        raise DatasetSplitError(f"任务目录必须以 task2 或 task3 命名：{root}")
+        raise DatasetSplitError(f"任务目录必须以 task3 命名：{root}")
     photo_dir = root / "photo"
     if not photo_dir.is_dir():
         raise DatasetSplitError(f"照片目录不存在：{photo_dir}")
@@ -396,13 +396,9 @@ if QtCore is not None:
             root.addWidget(title)
             root.addWidget(subtitle)
 
-            task_box = QtWidgets.QGroupBox("选择拍照任务")
+            task_box = QtWidgets.QGroupBox("数据集")
             task_layout = QtWidgets.QHBoxLayout(task_box)
-            self.task2_radio = QtWidgets.QRadioButton("Task 2（形状/颜色）")
-            self.task3_radio = QtWidgets.QRadioButton("Task 3（顶部图案）")
-            (self.task2_radio if initial_task == "task2" else self.task3_radio).setChecked(True)
-            task_layout.addWidget(self.task2_radio)
-            task_layout.addWidget(self.task3_radio)
+            task_layout.addWidget(QtWidgets.QLabel("3D识别抓取 · 七类 OBB 工件"))
             task_layout.addStretch(1)
             root.addWidget(task_box)
 
@@ -473,11 +469,9 @@ if QtCore is not None:
             self.capture_button.clicked.connect(self.capture_photo)
             self.split_button.clicked.connect(self.split_current_task)
             self.space_shortcut.activated.connect(self.capture_photo)
-            self.task2_radio.toggled.connect(self._update_task_details)
-            self.task3_radio.toggled.connect(self._update_task_details)
 
         def current_task(self) -> str:
-            return "task2" if self.task2_radio.isChecked() else "task3"
+            return "task3"
 
         def current_root(self) -> Path:
             return DATASETS_ROOT / self.current_task()
@@ -685,7 +679,7 @@ if QtCore is not None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="D435 RGB 拍照和 YOLO 数据集划分工具")
-    parser.add_argument("--task", choices=TASKS, default="task2", help="界面默认选中的任务")
+    parser.add_argument("--task", choices=TASKS, default="task3", help="数据集任务")
     parser.add_argument("--serial", default=None, help="多台 RealSense 时指定 D435 序列号")
     parser.add_argument("--seed", type=int, default=2026, help="可重复的数据集随机划分种子")
     parser.add_argument(

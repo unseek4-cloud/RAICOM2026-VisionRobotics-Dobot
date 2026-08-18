@@ -23,13 +23,12 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Settings
 from ..events import EventBus
-from ..types import PickTarget, RobotReply, StackPlaceTarget
+from ..types import DirectPlaceTarget, RobotReply
 
 
 PROTOCOL_VERSION = 1
@@ -141,32 +140,25 @@ class LuaBridgeServer:
     def go_photo(self) -> RobotReply:
         """请求机械臂回到 Lua 现场配置的固定拍照位。"""
 
-        context, error = self._runtime_context()
+        fields, error = self._base_command_fields()
         if error:
             return self._local_error(self._new_command_id("CONFIG"), error)
-        photo = context.pop("photo_pose")
-        # 以下字段只用于抓放派生点；回拍照位协议保持完全扁平且只携带必要值。
-        context.pop("orientation")
-        context.pop("z_up_sign")
-        context.pop("approach_mm")
-        context.pop("pick_lift_mm")
-        context.pop("release_retract_mm")
-        context.pop("place_inspection_z_mm")
-        fields = {
-            **context,
-            "photo_x": photo[0],
-            "photo_y": photo[1],
-            "photo_z": photo[2],
-            "photo_rx": photo[3],
-            "photo_ry": photo[4],
-            "photo_rz": photo[5],
-        }
         return self._execute_command(
             "go_photo", fields, required_phase="at_photo", required_holding=None
         )
 
-    def pick_and_place(self, target: PickTarget) -> RobotReply:
-        """发送一次抓取、放置并回拍照位任务。"""
+    def is_at_photo(self) -> RobotReply:
+        """读取真实 TCP 位姿并查询是否位于固定拍照位，不产生运动。"""
+
+        fields, error = self._base_command_fields()
+        if error:
+            return self._local_error(self._new_command_id("CONFIG"), error)
+        return self._execute_command(
+            "check_photo", fields, required_phase=None, required_holding=None
+        )
+
+    def pick_and_place_direct(self, target: DirectPlaceTarget) -> RobotReply:
+        """以 DobotStudio Pro MovJ 从识别抓取点 P1 直接到同 Z 放置点 P2。"""
 
         numeric = {
             "pick_x": target.pick_x_mm,
@@ -175,38 +167,24 @@ class LuaBridgeServer:
             "pick_rz": target.pick_rz_deg,
             "place_x": target.place_x_mm,
             "place_y": target.place_y_mm,
-            "place_down_mm": target.place_down_mm,
+            "place_z": target.pick_z_mm,
+            "place_rx": target.place_rx_deg,
+            "place_ry": target.place_ry_deg,
+            "place_rz": target.place_rz_deg,
         }
-        for name, value in numeric.items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return self._local_error("", f"坐标字段 {name} 不是数字")
-            if not math.isfinite(float(value)):
-                return self._local_error("", f"坐标字段 {name} 为 NaN/Inf")
+        error = self._validate_numeric_fields(numeric)
+        if error:
+            return self._local_error("", error)
         if not -90.0 <= float(target.pick_rz_deg) < 90.0:
             return self._local_error("", "pick_rz 必须是 [-90,90) 内的最短旋转角")
 
-        context, error = self._runtime_context()
+        context, error = self._base_command_fields()
         if error:
             return self._local_error(self._new_command_id("CONFIG"), error)
-        photo = context.pop("photo_pose")
-        orientation = context.pop("orientation")
-        z_up_sign = context.pop("z_up_sign")
-        approach_mm = context.pop("approach_mm")
-        pick_lift_mm = context.pop("pick_lift_mm")
-        release_retract_mm = context.pop("release_retract_mm")
-        context.pop("place_inspection_z_mm")
-
-        pick_z = float(target.pick_z_mm)
-        approach_z = pick_z + z_up_sign * approach_mm
-        transfer_z = pick_z + z_up_sign * pick_lift_mm
-        place_z = transfer_z - z_up_sign * float(target.place_down_mm)
-        retract_z = place_z + z_up_sign * release_retract_mm
-        if not all(
-            math.isfinite(value)
-            for value in (approach_z, transfer_z, place_z, retract_z)
-        ):
-            return self._local_error("", "派生的接近/转运/放置/回撤 Z 为 NaN/Inf")
-
+        runtime_context, error = self._runtime_context()
+        if error:
+            return self._local_error(self._new_command_id("CONFIG"), error)
+        orientation = runtime_context["orientation"]
         payload: dict[str, Any] = {
             **{key: float(value) for key, value in numeric.items()},
             **context,
@@ -216,153 +194,29 @@ class LuaBridgeServer:
             "pick_rx": orientation[0],
             "pick_ry": orientation[1],
             "pick_rz": float(target.pick_rz_deg),
-            "place_rx": orientation[0],
-            "place_ry": orientation[1],
-            "place_rz": 0.0,
-            "approach_z": approach_z,
-            "transfer_z": transfer_z,
-            "place_z": place_z,
-            "retract_z": retract_z,
-            "photo_x": photo[0],
-            "photo_y": photo[1],
-            "photo_z": photo[2],
-            "photo_rx": photo[3],
-            "photo_ry": photo[4],
-            "photo_rz": photo[5],
         }
         return self._execute_command(
-            "pick_place", payload, required_phase="at_photo", required_holding=None
-        )
-
-    def pick_to_inspection(self, target: StackPlaceTarget) -> RobotReply:
-        """任务三第一阶段：抓取后保持真空，移动到目标高度观察位。"""
-
-        numeric = {
-            "pick_x": target.pick_x_mm,
-            "pick_y": target.pick_y_mm,
-            "pick_z": target.pick_z_mm,
-            "pick_rz": target.pick_rz_deg,
-            "object_height_mm": target.object_height_mm,
-            "place_x": target.place_x_mm,
-            "place_y": target.place_y_mm,
-            "inspection_x": target.inspection_x_mm,
-            "inspection_y": target.inspection_y_mm,
-            "inspection_z": target.inspection_z_mm,
-        }
-        error = self._validate_numeric_fields(numeric)
-        if error:
-            return self._local_error("", error)
-        if not -90.0 <= float(target.pick_rz_deg) < 90.0:
-            return self._local_error("", "pick_rz 必须是 [-90,90) 内的最短旋转角")
-
-        context, error = self._runtime_context()
-        if error:
-            return self._local_error(self._new_command_id("CONFIG"), error)
-        photo = context.pop("photo_pose")
-        orientation = context.pop("orientation")
-        z_up_sign = context.pop("z_up_sign")
-        approach_mm = context.pop("approach_mm")
-        pick_lift_mm = context.pop("pick_lift_mm")
-        context.pop("release_retract_mm")
-        configured_inspection_z = context.pop("place_inspection_z_mm")
-        if not math.isclose(
-            float(target.inspection_z_mm), configured_inspection_z, abs_tol=1e-4
-        ):
-            return self._local_error("", "任务三观察 Z 与 robot.motion.place_inspection_z_mm 不一致")
-
-        pick_z = float(target.pick_z_mm)
-        approach_z = pick_z + z_up_sign * approach_mm
-        lift_z = pick_z + z_up_sign * pick_lift_mm
-        payload: dict[str, Any] = {
-            **{key: float(value) for key, value in numeric.items()},
-            **context,
-            "task": str(target.task),
-            "object_id": str(target.object_id),
-            "route_key": str(target.route_key),
-            "pick_rx": orientation[0],
-            "pick_ry": orientation[1],
-            "pick_rz": float(target.pick_rz_deg),
-            "inspection_rx": orientation[0],
-            "inspection_ry": orientation[1],
-            "inspection_rz": 0.0,
-            "approach_z": approach_z,
-            "lift_z": lift_z,
-            "photo_x": photo[0],
-            "photo_y": photo[1],
-            "photo_z": photo[2],
-            "photo_rx": photo[3],
-            "photo_ry": photo[4],
-            "photo_rz": photo[5],
-        }
-        return self._execute_command(
-            "pick_to_inspection",
-            payload,
-            required_phase="at_place_inspection",
-            required_holding=True,
-        )
-
-    def place_from_inspection(
-        self, target: StackPlaceTarget, hold_id: str, place_z_mm: float
-    ) -> RobotReply:
-        """任务三第二阶段：按视觉求得的绝对 Z 放置、释放并回拍照位。"""
-
-        numeric = {
-            "place_x": target.place_x_mm,
-            "place_y": target.place_y_mm,
-            "place_z": place_z_mm,
-            "inspection_x": target.inspection_x_mm,
-            "inspection_y": target.inspection_y_mm,
-            "inspection_z": target.inspection_z_mm,
-        }
-        error = self._validate_numeric_fields(numeric)
-        if error:
-            return self._local_error("", error)
-        if not hold_id:
-            return self._local_error("", "任务三动态放置缺少 hold_id")
-
-        context, error = self._runtime_context()
-        if error:
-            return self._local_error(self._new_command_id("CONFIG"), error)
-        photo = context.pop("photo_pose")
-        orientation = context.pop("orientation")
-        z_up_sign = context.pop("z_up_sign")
-        context.pop("approach_mm")
-        context.pop("pick_lift_mm")
-        release_retract_mm = context.pop("release_retract_mm")
-        configured_inspection_z = context.pop("place_inspection_z_mm")
-        if not math.isclose(
-            float(target.inspection_z_mm), configured_inspection_z, abs_tol=1e-4
-        ):
-            return self._local_error("", "任务三观察 Z 与 robot.motion.place_inspection_z_mm 不一致")
-
-        retract_z = float(place_z_mm) + z_up_sign * release_retract_mm
-        payload: dict[str, Any] = {
-            **{key: float(value) for key, value in numeric.items()},
-            **context,
-            "task": str(target.task),
-            "object_id": str(target.object_id),
-            "route_key": str(target.route_key),
-            "hold_id": str(hold_id),
-            "place_rx": orientation[0],
-            "place_ry": orientation[1],
-            "place_rz": 0.0,
-            "inspection_rx": orientation[0],
-            "inspection_ry": orientation[1],
-            "inspection_rz": 0.0,
-            "retract_z": retract_z,
-            "photo_x": photo[0],
-            "photo_y": photo[1],
-            "photo_z": photo[2],
-            "photo_rx": photo[3],
-            "photo_ry": photo[4],
-            "photo_rz": photo[5],
-        }
-        return self._execute_command(
-            "place_from_inspection",
+            "pick_place_direct",
             payload,
             required_phase="at_photo",
             required_holding=False,
         )
+
+    def _base_command_fields(self) -> tuple[dict[str, Any], str]:
+        context, error = self._runtime_context()
+        if error:
+            return {}, error
+        photo = context.pop("photo_pose")
+        context.pop("orientation")
+        return {
+            **context,
+            "photo_x": photo[0],
+            "photo_y": photo[1],
+            "photo_z": photo[2],
+            "photo_rx": photo[3],
+            "photo_ry": photo[4],
+            "photo_rz": photo[5],
+        }, ""
 
     @staticmethod
     def _validate_numeric_fields(fields: dict[str, Any]) -> str:
@@ -432,31 +286,16 @@ class LuaBridgeServer:
         if not self._finite_sequence(orientation, 3):
             return {}, "robot.motion.orientation_mm_deg 必须填写 3 个有限姿态值"
         if not math.isclose(float(orientation[2]), 0.0, abs_tol=1e-6):
-            return {}, "robot.motion.orientation_mm_deg 的 RZ 必须为 0（放置回正基准）"
+            return {}, "robot.motion.orientation_mm_deg 的 RZ 必须为 0（抓取动态 RZ 基准）"
 
-        workspace = self.settings.get("robot.workspace_mm", None)
-        if not isinstance(workspace, Mapping):
-            return {}, "robot.workspace_mm 必须填写三轴工作空间"
-        workspace_fields: dict[str, float] = {}
-        for axis in ("x", "y", "z"):
-            bounds = workspace.get(axis)
-            if not self._finite_sequence(bounds, 2) or float(bounds[0]) >= float(bounds[1]):
-                return {}, f"robot.workspace_mm.{axis} 必须填写有效的 [最小值, 最大值]"
-            workspace_fields[f"workspace_{axis}_min"] = float(bounds[0])
-            workspace_fields[f"workspace_{axis}_max"] = float(bounds[1])
-
-        approach, error = finite_number("robot.motion.approach_mm", positive=True)
-        if error:
-            return {}, error
-        lift, error = finite_number("robot.motion.pick_lift_mm", positive=True)
-        if error:
-            return {}, error
-        release_retract, error = finite_number(
-            "robot.motion.release_retract_mm", positive=True
+        photo_tolerance_mm, error = finite_number(
+            "robot.photo_pose_tolerance_mm", positive=True
         )
         if error:
             return {}, error
-        place_inspection_z, error = finite_number("robot.motion.place_inspection_z_mm")
+        photo_tolerance_deg, error = finite_number(
+            "robot.photo_pose_tolerance_deg", positive=True
+        )
         if error:
             return {}, error
         travel_v, error = finite_number("robot.motion.travel_speed_percent", positive=True)
@@ -482,10 +321,6 @@ class LuaBridgeServer:
         ):
             if value is None or value > 100:
                 return {}, f"现场配置 {key} 必须在 (0,100]"
-
-        z_up_sign = self.settings.get("robot.motion.z_up_sign", 1)
-        if isinstance(z_up_sign, bool) or z_up_sign not in (-1, 1):
-            return {}, "robot.motion.z_up_sign 只能为 1 或 -1"
 
         vacuum_api = self.settings.get("robot.vacuum.api", None)
         if vacuum_api not in ("ToolDO", "DO"):
@@ -529,12 +364,8 @@ class LuaBridgeServer:
             "tool": tool,
             "photo_pose": tuple(float(value) for value in photo),
             "orientation": tuple(float(value) for value in orientation),
-            **workspace_fields,
-            "z_up_sign": int(z_up_sign),
-            "approach_mm": float(approach),
-            "pick_lift_mm": float(lift),
-            "release_retract_mm": float(release_retract),
-            "place_inspection_z_mm": float(place_inspection_z),
+            "photo_tolerance_mm": float(photo_tolerance_mm),
+            "photo_tolerance_deg": float(photo_tolerance_deg),
             "travel_v": float(travel_v),
             "pick_v": float(pick_v),
             "accel": float(acceleration),

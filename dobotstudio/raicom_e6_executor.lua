@@ -12,7 +12,7 @@
 3. 脚本故意不使用参考文件中的 SetIODO、TCPConnect、TCPRecv、TCPSend，
    也不使用未在 E6/V4.5 指令表中确认的 Sync()。
 4. 正式使用的 API 为 TCPCreate/TCPStart/TCPRead/TCPWrite/TCPDestroy、
-   MovJ/MovL、CheckMovJ/CheckMovL、Wait、DO/ToolDO。
+   GetPose、MovJ、CheckMovJ、Wait、DO/ToolDO。
 5. 指令签名按 DobotStudio Pro V4.5 手册编写；比赛前仍须在实际安装版本中使用
    “脚本检查/低速单步”确认。特别要点：Wait(check_str, timeout_ms) 返回布尔值，
    E6 末端 DI/DO 各 2 路、底座 DI/DO 各 16 路，但实际接线与输出极性必须实测。
@@ -40,27 +40,16 @@ local CFG = {
         x = 160.0, y = -60.0, z = 430.0,
         rx = 180.0, ry = 0, rz = 0,
     },
+    photo_tolerance_mm = 2.0,
+    photo_tolerance_deg = 2.0,
 
-    -- ★现场必填：吸盘竖直姿态；rz=0 是放置回正基准，抓取 rz 由 OBB 动态下发。
+    -- ★现场必填：吸盘抓取姿态；rz=0 是动态抓取 RZ 基准，放置姿态由 Python 逐类下发。
     pick_orientation = {rx = 180.0, ry = 0, rz = 0},
 
-    -- ★现场必填：按当前用户坐标系低速示教得到的软件工作空间。
-    workspace = {
-        x_min = 155.0, x_max = 310.0,
-        y_min = -150.0, y_max = 135.0,
-        z_min = 85.0, z_max = 435.0,
-    },
-
-    -- 运动参数。下列初值与 settings.yaml 一致；首次真机应在两处同步调低后再单步。
+    -- 运动参数。P1 与 P2 使用相同 Z，由 MovJ 直接规划 P1→P2。
     motion = {
-        approach_mm = 40.0,       -- 抓取点上方的接近距离
-        pick_lift_mm = 80.0,      -- 吸取后保持 X/Y 不变的抬升距离
-        release_retract_mm = 80.0,-- 释放回撤距离；任务三也作为低位转运净空
-        -- 现场实测 Z=417 已不可达：原抓取 XY 只升至 410，随后保持 Z=410 仅移动 XY。
-        place_inspection_z_mm = 410.0,
-        z_up_sign = 1,            -- 标准用户坐标 Z 向上填 1；若现场相反填 -1
-        travel_v = 20,            -- 运动速度安全上限比例 (0,100]
-        pick_v = 10,              -- 直线接近/离开速度安全上限比例 (0,100]
+        travel_v = 20,
+        pick_v = 10,
         acceleration = 20,        -- 加速度比例 (0,100]
         settle_ms = 300,          -- 到位后短暂稳定时间
     },
@@ -97,9 +86,6 @@ local CFG = {
 local PROTOCOL_VERSION = 1
 local recent_by_id = {}
 local recent_order = {}
--- 任务三分成“持件观察”和“按视觉 Z 释放”两条命令。两条命令之间必须在
--- Lua 内保留持件事务，禁止回拍照位或开始另一件抓取。
-local active_hold = nil
 
 local function log(message)
     Log("[RAICOM-E6] " .. tostring(message))
@@ -279,42 +265,18 @@ local function validate_static_config()
         end
     end
     if orientation.rz ~= 0 then
-        -- 静态配置只接受明确的回正基准 0；动态抓取 RZ 由 Python 单件下发。
+        -- 静态配置只接受动态抓取 RZ 的基准 0；放置姿态由 Python 单件下发。
         return false, "pick_orientation.rz must be 0"
     end
 
-    local ws = CFG.workspace
-    for _, axis in ipairs({"x", "y", "z"}) do
-        local minimum = ws[axis .. "_min"]
-        local maximum = ws[axis .. "_max"]
-        if not is_finite(minimum) or not is_finite(maximum) or minimum >= maximum then
-            return false, "workspace " .. axis .. " bounds are invalid"
-        end
+    if not is_finite(CFG.photo_tolerance_mm) or CFG.photo_tolerance_mm <= 0 then
+        return false, "photo_tolerance_mm must be positive"
     end
-    if photo.x < ws.x_min or photo.x > ws.x_max
-        or photo.y < ws.y_min or photo.y > ws.y_max
-        or photo.z < ws.z_min or photo.z > ws.z_max then
-        return false, "photo_pose is outside workspace"
+    if not is_finite(CFG.photo_tolerance_deg) or CFG.photo_tolerance_deg <= 0 then
+        return false, "photo_tolerance_deg must be positive"
     end
 
     local motion = CFG.motion
-    if not is_finite(motion.approach_mm) or motion.approach_mm <= 0 then
-        return false, "motion.approach_mm must be positive"
-    end
-    if not is_finite(motion.pick_lift_mm) or motion.pick_lift_mm <= 0 then
-        return false, "motion.pick_lift_mm must be positive"
-    end
-    if not is_finite(motion.release_retract_mm) or motion.release_retract_mm <= 0 then
-        return false, "motion.release_retract_mm must be positive"
-    end
-    if not is_finite(motion.place_inspection_z_mm)
-        or motion.place_inspection_z_mm < CFG.workspace.z_min
-        or motion.place_inspection_z_mm > CFG.workspace.z_max then
-        return false, "motion.place_inspection_z_mm is outside workspace"
-    end
-    if motion.z_up_sign ~= 1 and motion.z_up_sign ~= -1 then
-        return false, "motion.z_up_sign must be 1 or -1"
-    end
     for _, key in ipairs({"travel_v", "pick_v", "acceleration"}) do
         local value = motion[key]
         if not is_finite(value) or value <= 0 or value > 100 then
@@ -371,22 +333,7 @@ local function make_pose(x, y, z, rx, ry, rz)
     return {pose = {x, y, z, rx, ry, rz}}
 end
 
-local function point_in_workspace(x, y, z)
-    local ws = CFG.workspace
-    return is_finite(x) and is_finite(y) and is_finite(z)
-        and x >= ws.x_min and x <= ws.x_max
-        and y >= ws.y_min and y <= ws.y_max
-        and z >= ws.z_min and z <= ws.z_max
-end
-
-local function pose_in_workspace(pose)
-    return point_in_workspace(pose.x, pose.y, pose.z)
-end
-
 local function checked_movj(pose, velocity)
-    if not pose_in_workspace(pose) then
-        return false, "OUT_OF_WORKSPACE"
-    end
     local point = make_pose(pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz)
     local options = {
         user = CFG.user_index,
@@ -401,27 +348,6 @@ local function checked_movj(pose, velocity)
     end
     MovJ(point, options)
     -- V4.5 Wait 会在上一条命令完成后再开始等待，因此这里同时承担到位屏障。
-    Wait(1)
-    return true, ""
-end
-
-local function checked_movl(pose, velocity)
-    if not pose_in_workspace(pose) then
-        return false, "OUT_OF_WORKSPACE"
-    end
-    local point = make_pose(pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz)
-    local options = {
-        user = CFG.user_index,
-        tool = CFG.tool_index,
-        a = CFG.motion.acceleration,
-        v = velocity,
-        cp = 0,
-    }
-    local status = CheckMovL(point, options)
-    if status ~= 0 then
-        return false, "CHECK_MOVL_" .. tostring(status)
-    end
-    MovL(point, options)
     Wait(1)
     return true, ""
 end
@@ -472,7 +398,7 @@ local function valid_shortest_pick_rz(value)
     return is_finite(value) and value >= -90.0 and value < 90.0
 end
 
--- Python 会把 settings.yaml 中已通过安全校验的现场参数显式放入每条运动命令；
+-- Python 会把 settings.yaml 中的现场参数显式放入每条运动命令；
 -- Lua 再与本脚本 CFG 比较。两处不一致时拒绝动作，避免改错文件后静默运行。
 local function validate_request_context(line)
     local user = json_get_number(line, "user")
@@ -495,16 +421,11 @@ local function validate_request_context(line)
         end
     end
 
-    local ws = CFG.workspace
-    local workspace_fields = {
-        workspace_x_min = ws.x_min, workspace_x_max = ws.x_max,
-        workspace_y_min = ws.y_min, workspace_y_max = ws.y_max,
-        workspace_z_min = ws.z_min, workspace_z_max = ws.z_max,
-    }
-    for key, expected in pairs(workspace_fields) do
-        if not almost_equal(json_get_number(line, key), expected) then
-            return false, "CONFIG_MISMATCH_" .. string.upper(key)
-        end
+    if not almost_equal(json_get_number(line, "photo_tolerance_mm"), CFG.photo_tolerance_mm) then
+        return false, "CONFIG_MISMATCH_PHOTO_TOLERANCE_MM"
+    end
+    if not almost_equal(json_get_number(line, "photo_tolerance_deg"), CFG.photo_tolerance_deg) then
+        return false, "CONFIG_MISMATCH_PHOTO_TOLERANCE_DEG"
     end
 
     local travel_v = json_get_number(line, "travel_v")
@@ -522,12 +443,6 @@ local function validate_request_context(line)
     end
     if not is_finite(settle_ms) or settle_ms < 0 then
         return false, "BAD_SETTLE_MS"
-    end
-    -- Lua CFG 是最终安全上限；Python 可以请求更慢，但不能请求更快。
-    if travel_v > CFG.motion.travel_v
-        or pick_v > CFG.motion.pick_v
-        or accel > CFG.motion.acceleration then
-        return false, "PYTHON_MOTION_EXCEEDS_LUA_LIMIT"
     end
     if not almost_equal(settle_ms, CFG.motion.settle_ms) then
         return false, "CONFIG_MISMATCH_SETTLE_MS"
@@ -579,288 +494,92 @@ local function go_photo(socket, command_id)
     return true, ""
 end
 
-local function parse_pick_job(line)
+local function angular_distance_deg(left, right)
+    local delta = (left - right + 180.0) % 360.0 - 180.0
+    return math.abs(delta)
+end
+
+local function current_photo_state()
+    local current = GetPose(CFG.user_index, CFG.tool_index)
+    if type(current) ~= "table" or type(current.pose) ~= "table" then
+        return nil, false, "GET_POSE_INVALID"
+    end
+    local values = current.pose
+    for index = 1, 6 do
+        if not is_finite(values[index]) then
+            return nil, false, "GET_POSE_BAD_VALUE"
+        end
+    end
+    local photo = CFG.photo_pose
+    local at_photo = math.abs(values[1] - photo.x) <= CFG.photo_tolerance_mm
+        and math.abs(values[2] - photo.y) <= CFG.photo_tolerance_mm
+        and math.abs(values[3] - photo.z) <= CFG.photo_tolerance_mm
+        and angular_distance_deg(values[4], photo.rx) <= CFG.photo_tolerance_deg
+        and angular_distance_deg(values[5], photo.ry) <= CFG.photo_tolerance_deg
+        and angular_distance_deg(values[6], photo.rz) <= CFG.photo_tolerance_deg
+    return values, at_photo, ""
+end
+
+local function parse_direct_job(line)
     local job = {
         pick_x = json_get_number(line, "pick_x"),
         pick_y = json_get_number(line, "pick_y"),
         pick_z = json_get_number(line, "pick_z"),
-        pick_rx = json_get_number(line, "pick_rx"),
-        pick_ry = json_get_number(line, "pick_ry"),
-        pick_rz = json_get_number(line, "pick_rz"),
         place_x = json_get_number(line, "place_x"),
         place_y = json_get_number(line, "place_y"),
         place_z = json_get_number(line, "place_z"),
-        place_rx = json_get_number(line, "place_rx"),
-        place_ry = json_get_number(line, "place_ry"),
-        place_rz = json_get_number(line, "place_rz"),
-        approach_z = json_get_number(line, "approach_z"),
-        transfer_z = json_get_number(line, "transfer_z"),
-        retract_z = json_get_number(line, "retract_z"),
-        place_down_mm = json_get_number(line, "place_down_mm"),
-    }
-    for _, key in ipairs({
-        "pick_x", "pick_y", "pick_z", "pick_rx", "pick_ry", "pick_rz",
-        "place_x", "place_y", "place_z", "place_rx", "place_ry", "place_rz",
-        "approach_z", "transfer_z", "retract_z", "place_down_mm",
-    }) do
-        local value = job[key]
-        if not is_finite(value) then
-            return nil, "BAD_NUMBER_" .. key
-        end
-    end
-    if job.place_down_mm <= 0 then
-        return nil, "BAD_PLACE_DOWN"
-    end
-
-    local orientation = CFG.pick_orientation
-    if not almost_equal(job.pick_rx, orientation.rx)
-        or not almost_equal(job.pick_ry, orientation.ry)
-        or not almost_equal(job.place_rx, orientation.rx)
-        or not almost_equal(job.place_ry, orientation.ry)
-        or not almost_equal(job.place_rz, 0.0) then
-        return nil, "CONFIG_MISMATCH_ORIENTATION"
-    end
-    if not valid_shortest_pick_rz(job.pick_rz) then
-        return nil, "PICK_RZ_NOT_SHORTEST"
-    end
-
-    local sign = CFG.motion.z_up_sign
-    local expected_approach = job.pick_z + sign * CFG.motion.approach_mm
-    local expected_transfer = job.pick_z + sign * CFG.motion.pick_lift_mm
-    local expected_place = job.transfer_z - sign * job.place_down_mm
-    local expected_retract = job.place_z + sign * CFG.motion.release_retract_mm
-    if not almost_equal(job.approach_z, expected_approach) then
-        return nil, "CONFIG_MISMATCH_APPROACH_Z"
-    end
-    if not almost_equal(job.transfer_z, expected_transfer) then
-        return nil, "CONFIG_MISMATCH_TRANSFER_Z"
-    end
-    if not almost_equal(job.place_z, expected_place) then
-        return nil, "CONFIG_MISMATCH_PLACE_Z"
-    end
-    if not almost_equal(job.retract_z, expected_retract) then
-        return nil, "CONFIG_MISMATCH_RETRACT_Z"
-    end
-    return job, ""
-end
-
-local function build_job_poses(job)
-    local poses = {
-        pick_approach = {
-            x = job.pick_x, y = job.pick_y, z = job.approach_z,
-            rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
-        },
-        pick = {
-            x = job.pick_x, y = job.pick_y, z = job.pick_z,
-            rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
-        },
-        pick_lift = {
-            x = job.pick_x, y = job.pick_y, z = job.transfer_z,
-            rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
-        },
-        -- 抬升到安全高度后保持 XYZ，先把工件回正到 RZ=0，再水平转运。
-        pick_straighten = {
-            x = job.pick_x, y = job.pick_y, z = job.transfer_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-        place_transfer = {
-            x = job.place_x, y = job.place_y, z = job.transfer_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-        place = {
-            x = job.place_x, y = job.place_y, z = job.place_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-        place_retract = {
-            x = job.place_x, y = job.place_y, z = job.retract_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-    }
-    for name, pose in pairs(poses) do
-        if not pose_in_workspace(pose) then
-            return nil, "OUT_OF_WORKSPACE_" .. name
-        end
-    end
-    return poses, ""
-end
-
-local function pick_and_place(socket, command_id, line)
-    local job, parse_error = parse_pick_job(line)
-    if job == nil then
-        return false, parse_error, false
-    end
-    local poses, pose_error = build_job_poses(job)
-    if poses == nil then
-        return false, pose_error, false
-    end
-
-    local holding_part = false
-    local ok
-    local code
-
-    send_status(socket, command_id, "running", {phase = "above_pick"})
-    ok, code = checked_movj(poses.pick_approach, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part end
-
-    send_status(socket, command_id, "running", {phase = "descend_pick"})
-    ok, code = checked_movl(poses.pick, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
-
-    send_status(socket, command_id, "running", {phase = "vacuum_on"})
-    ok, code = set_vacuum(true)
-    if not ok then
-        set_vacuum(false)
-        -- 真空未建立时不携带工件，尝试沿原路径退出。
-        checked_movl(poses.pick_approach, CFG.motion.pick_v)
-        go_photo(socket, command_id)
-        return false, code, false
-    end
-    holding_part = true
-
-    -- 用户要求：吸住后 X/Y 不变，仅抬高 Z。
-    send_status(socket, command_id, "running", {phase = "lift_pick"})
-    ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
-
-    send_status(socket, command_id, "running", {phase = "straighten_rz"})
-    ok, code = checked_movl(poses.pick_straighten, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
-
-    -- 用户要求：保持抬升后的 Z 不变，只将 X/Y 移到放置点。
-    send_status(socket, command_id, "running", {phase = "transfer_xy"})
-    -- 必须使用直线运动；MovJ 只能保证终点 Z 相同，关节插补途中并不保持恒定 Z。
-    ok, code = checked_movl(poses.place_transfer, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part end
-
-    send_status(socket, command_id, "running", {phase = "descend_place"})
-    ok, code = checked_movl(poses.place, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
-
-    send_status(socket, command_id, "running", {phase = "vacuum_off"})
-    ok, code = set_vacuum(false)
-    if not ok then return false, code, holding_part end
-    holding_part = false
-
-    send_status(socket, command_id, "running", {phase = "retract_place"})
-    ok, code = checked_movl(poses.place_retract, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part end
-
-    ok, code = go_photo(socket, command_id)
-    if not ok then return false, code, holding_part end
-    return true, "", holding_part
-end
-
-local function parse_stack_pick_job(line)
-    local job = {
-        pick_x = json_get_number(line, "pick_x"),
-        pick_y = json_get_number(line, "pick_y"),
-        pick_z = json_get_number(line, "pick_z"),
-        object_height_mm = json_get_number(line, "object_height_mm"),
-        place_x = json_get_number(line, "place_x"),
-        place_y = json_get_number(line, "place_y"),
-        inspection_x = json_get_number(line, "inspection_x"),
-        inspection_y = json_get_number(line, "inspection_y"),
-        inspection_z = json_get_number(line, "inspection_z"),
         pick_rx = json_get_number(line, "pick_rx"),
         pick_ry = json_get_number(line, "pick_ry"),
         pick_rz = json_get_number(line, "pick_rz"),
-        inspection_rx = json_get_number(line, "inspection_rx"),
-        inspection_ry = json_get_number(line, "inspection_ry"),
-        inspection_rz = json_get_number(line, "inspection_rz"),
-        approach_z = json_get_number(line, "approach_z"),
-        lift_z = json_get_number(line, "lift_z"),
+        place_rx = json_get_number(line, "place_rx"),
+        place_ry = json_get_number(line, "place_ry"),
+        place_rz = json_get_number(line, "place_rz"),
     }
     for _, key in ipairs({
-        "pick_x", "pick_y", "pick_z", "object_height_mm", "place_x", "place_y",
-        "inspection_x", "inspection_y", "inspection_z",
+        "pick_x", "pick_y", "pick_z", "place_x", "place_y", "place_z",
         "pick_rx", "pick_ry", "pick_rz",
-        "inspection_rx", "inspection_ry", "inspection_rz", "approach_z", "lift_z",
+        "place_rx", "place_ry", "place_rz",
     }) do
         local value = job[key]
         if not is_finite(value) then
             return nil, "BAD_NUMBER_" .. key
         end
     end
-    if job.object_height_mm <= 0 then
-        return nil, "BAD_OBJECT_HEIGHT"
-    end
-    if not almost_equal(job.inspection_z, CFG.motion.place_inspection_z_mm) then
-        return nil, "CONFIG_MISMATCH_PLACE_INSPECTION_Z"
+    if not almost_equal(job.place_z, job.pick_z) then
+        return nil, "P1_P2_Z_MISMATCH"
     end
 
     local orientation = CFG.pick_orientation
     if not almost_equal(job.pick_rx, orientation.rx)
         or not almost_equal(job.pick_ry, orientation.ry)
-        or not valid_shortest_pick_rz(job.pick_rz)
-        or not almost_equal(job.inspection_rx, orientation.rx)
-        or not almost_equal(job.inspection_ry, orientation.ry)
-        or not almost_equal(job.inspection_rz, 0.0) then
+        or not valid_shortest_pick_rz(job.pick_rz) then
         return nil, "CONFIG_MISMATCH_ORIENTATION"
-    end
-    local sign = CFG.motion.z_up_sign
-    if not almost_equal(job.approach_z, job.pick_z + sign * CFG.motion.approach_mm) then
-        return nil, "CONFIG_MISMATCH_APPROACH_Z"
-    end
-    if not almost_equal(job.lift_z, job.pick_z + sign * CFG.motion.pick_lift_mm) then
-        return nil, "CONFIG_MISMATCH_LIFT_Z"
-    end
-    if sign * (job.inspection_z - job.lift_z) <= 0 then
-        return nil, "PICK_TRANSFER_Z_NOT_BELOW_INSPECTION"
     end
     return job, ""
 end
 
-local function build_stack_pick_poses(job)
-    local poses = {
-        pick_approach = {
-            x = job.pick_x, y = job.pick_y, z = job.approach_z,
-            rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
-        },
-        pick = {
+local function build_direct_poses(job)
+    return {
+        p1 = {
             x = job.pick_x, y = job.pick_y, z = job.pick_z,
             rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
         },
-        pick_lift = {
-            x = job.pick_x, y = job.pick_y, z = job.lift_z,
-            rx = job.pick_rx, ry = job.pick_ry, rz = job.pick_rz,
-        },
-        pick_straighten = {
-            x = job.pick_x, y = job.pick_y, z = job.lift_z,
-            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
-        },
-        -- 不能在任意抓取 XY 直接升到 410：现场部分高位终点逆解无解。
-        -- 先以吸取后的低位 Z 移到已知可达的观察 XY，再在该 XY 垂直上升。
-        inspection_transfer = {
-            x = job.inspection_x, y = job.inspection_y, z = job.lift_z,
-            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
-        },
-        inspection = {
-            x = job.inspection_x, y = job.inspection_y, z = job.inspection_z,
-            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
+        p2 = {
+            x = job.place_x, y = job.place_y, z = job.place_z,
+            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
         },
     }
-    for name, pose in pairs(poses) do
-        if not pose_in_workspace(pose) then
-            return nil, "OUT_OF_WORKSPACE_" .. name
-        end
-    end
-    return poses, ""
 end
 
-local function pick_to_inspection(socket, command_id, job, poses)
+local function pick_and_place_direct(socket, command_id, poses)
     local holding_part = false
     local ok
     local code
     local phase
 
-    phase = "above_pick"
+    phase = "move_to_p1"
     send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movj(poses.pick_approach, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part, phase end
-
-    phase = "descend_pick"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.pick, CFG.motion.pick_v)
+    ok, code = checked_movj(poses.p1, CFG.motion.pick_v)
     if not ok then return false, code, holding_part, phase end
 
     phase = "vacuum_on"
@@ -868,171 +587,14 @@ local function pick_to_inspection(socket, command_id, job, poses)
     ok, code = set_vacuum(true)
     if not ok then
         set_vacuum(false)
-        checked_movl(poses.pick_approach, CFG.motion.pick_v)
         go_photo(socket, command_id)
         return false, code, false, phase
     end
     holding_part = true
-    active_hold = {
-        hold_id = command_id,
-        ready = false,
-        place_x = job.place_x,
-        place_y = job.place_y,
-        inspection_x = job.inspection_x,
-        inspection_y = job.inspection_y,
-        inspection_z = job.inspection_z,
-    }
 
-    phase = "lift_pick"
+    phase = "move_p1_to_p2_same_z"
     send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.pick_lift, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part, phase end
-
-    phase = "straighten_rz"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.pick_straighten, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part, phase end
-
-    -- 先保持吸取后的低位 Z，只移动 XY 到观察位 XY；再在已知可达的
-    -- 观察 XY 垂直升到 410。彻底删除“任意抓取 XY 的 Z=410”终点。
-    phase = "transfer_to_inspection_low"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.inspection_transfer, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part, phase end
-
-    phase = "raise_at_inspection_xy"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.inspection, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part, phase end
-    Wait(CFG.motion.settle_ms)
-    active_hold.ready = true
-    return true, "", holding_part, "at_place_inspection"
-end
-
-local function parse_stack_release_job(line)
-    local job = {
-        place_x = json_get_number(line, "place_x"),
-        place_y = json_get_number(line, "place_y"),
-        place_z = json_get_number(line, "place_z"),
-        inspection_x = json_get_number(line, "inspection_x"),
-        inspection_y = json_get_number(line, "inspection_y"),
-        inspection_z = json_get_number(line, "inspection_z"),
-        place_rx = json_get_number(line, "place_rx"),
-        place_ry = json_get_number(line, "place_ry"),
-        place_rz = json_get_number(line, "place_rz"),
-        inspection_rx = json_get_number(line, "inspection_rx"),
-        inspection_ry = json_get_number(line, "inspection_ry"),
-        inspection_rz = json_get_number(line, "inspection_rz"),
-        retract_z = json_get_number(line, "retract_z"),
-    }
-    for _, key in ipairs({
-        "place_x", "place_y", "place_z", "inspection_x", "inspection_y", "inspection_z",
-        "place_rx", "place_ry", "place_rz",
-        "inspection_rx", "inspection_ry", "inspection_rz", "retract_z",
-    }) do
-        local value = job[key]
-        if not is_finite(value) then
-            return nil, "BAD_NUMBER_" .. key
-        end
-    end
-    local hold_id = json_get_string(line, "hold_id")
-    if not valid_command_id(hold_id) then
-        return nil, "BAD_HOLD_ID"
-    end
-    job.hold_id = hold_id
-    if active_hold == nil or active_hold.hold_id ~= hold_id then
-        return nil, "HOLD_ID_MISMATCH"
-    end
-    if not active_hold.ready then
-        return nil, "HOLD_NOT_AT_INSPECTION"
-    end
-    for _, key in ipairs({"place_x", "place_y", "inspection_x", "inspection_y", "inspection_z"}) do
-        if not almost_equal(job[key], active_hold[key]) then
-            return nil, "HOLD_TARGET_MISMATCH_" .. string.upper(key)
-        end
-    end
-    if not almost_equal(job.inspection_z, CFG.motion.place_inspection_z_mm) then
-        return nil, "CONFIG_MISMATCH_PLACE_INSPECTION_Z"
-    end
-
-    local orientation = CFG.pick_orientation
-    for _, prefix in ipairs({"place", "inspection"}) do
-        if not almost_equal(job[prefix .. "_rx"], orientation.rx)
-            or not almost_equal(job[prefix .. "_ry"], orientation.ry)
-            or not almost_equal(job[prefix .. "_rz"], orientation.rz) then
-            return nil, "CONFIG_MISMATCH_ORIENTATION"
-        end
-    end
-    local expected_retract = job.place_z
-        + CFG.motion.z_up_sign * CFG.motion.release_retract_mm
-    if not almost_equal(job.retract_z, expected_retract) then
-        return nil, "CONFIG_MISMATCH_RETRACT_Z"
-    end
-    -- retract_z 同时作为低位水平转运高度：必须在释放点上方、观察位下方。
-    local sign = CFG.motion.z_up_sign
-    if sign * (job.retract_z - job.place_z) <= 0 then
-        return nil, "TRANSFER_Z_NOT_ABOVE_PLACE"
-    end
-    if sign * (job.inspection_z - job.retract_z) <= 0 then
-        return nil, "TRANSFER_Z_NOT_BELOW_INSPECTION"
-    end
-    return job, ""
-end
-
-local function build_stack_release_poses(job)
-    local poses = {
-        inspection = {
-            x = job.inspection_x, y = job.inspection_y, z = job.inspection_z,
-            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
-        },
-        -- 不能在放置 XY 使用观察高度：现场 (250,120,410) 逆解无解。
-        -- 先在观察 XY 垂直降到动态低位，再保持该 Z 只移动 XY。
-        inspection_transfer = {
-            x = job.inspection_x, y = job.inspection_y, z = job.retract_z,
-            rx = job.inspection_rx, ry = job.inspection_ry, rz = job.inspection_rz,
-        },
-        place_transfer = {
-            x = job.place_x, y = job.place_y, z = job.retract_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-        place = {
-            x = job.place_x, y = job.place_y, z = job.place_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-        place_retract = {
-            x = job.place_x, y = job.place_y, z = job.retract_z,
-            rx = job.place_rx, ry = job.place_ry, rz = job.place_rz,
-        },
-    }
-    for name, pose in pairs(poses) do
-        if not pose_in_workspace(pose) then
-            return nil, "OUT_OF_WORKSPACE_" .. name
-        end
-    end
-    return poses, ""
-end
-
-local function place_from_inspection(socket, command_id, poses)
-    local holding_part = true
-    local ok
-    local code
-    local phase
-
-    -- 一旦第二阶段开始运动，就不允许把失败后的未知位置当作观察位重试。
-    active_hold.ready = false
-    phase = "lower_at_inspection_xy"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.inspection_transfer, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part, phase end
-
-    phase = "transfer_to_place_low"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.place_transfer, CFG.motion.travel_v)
-    if not ok then return false, code, holding_part, phase end
-
-    phase = "descend_place_visual_z"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.place, CFG.motion.pick_v)
+    ok, code = checked_movj(poses.p2, CFG.motion.travel_v)
     if not ok then return false, code, holding_part, phase end
 
     phase = "vacuum_off"
@@ -1040,14 +602,9 @@ local function place_from_inspection(socket, command_id, poses)
     ok, code = set_vacuum(false)
     if not ok then return false, code, holding_part, phase end
     holding_part = false
-    active_hold = nil
-
-    phase = "retract_place"
-    send_status(socket, command_id, "running", {phase = phase})
-    ok, code = checked_movl(poses.place_retract, CFG.motion.pick_v)
-    if not ok then return false, code, holding_part, phase end
 
     phase = "return_photo"
+    send_status(socket, command_id, "running", {phase = phase})
     ok, code = go_photo(socket, command_id)
     if not ok then return false, code, holding_part, phase end
     return true, "", holding_part, "at_photo"
@@ -1121,7 +678,7 @@ local function handle_line(socket, line)
 
     if command == "ping" then
         send_status(socket, command_id, "pong", {
-            state = active_hold ~= nil and "holding_task3_part" or "idle",
+            state = "idle",
         })
         return true
     end
@@ -1131,8 +688,8 @@ local function handle_line(socket, line)
         -- 后读到这里。不追加运动，也不改变吸盘输出；运动异常后贸然断真空可能掉件。
         send_status(socket, command_id, "accepted", {cmd = command})
         return cache_and_send_terminal(socket, command_id, command, line, "done", {
-            phase = active_hold ~= nil and "at_place_inspection" or "idle",
-            holding_part = active_hold ~= nil,
+            phase = "idle",
+            holding_part = false,
         })
     end
 
@@ -1140,16 +697,6 @@ local function handle_line(socket, line)
     if not config_ok then
         send_status(socket, command_id, "error", {
             code = "CONFIG_INVALID", message = config_error, recoverable = false,
-        })
-        return true
-    end
-
-    if active_hold ~= nil and command ~= "place_from_inspection" then
-        send_status(socket, command_id, "error", {
-            code = "HOLD_ACTIVE",
-            message = "a task3 part is held; only place_from_inspection is allowed",
-            recoverable = false,
-            holding_part = true,
         })
         return true
     end
@@ -1172,7 +719,7 @@ local function handle_line(socket, line)
         return cache_and_send_terminal(socket, command_id, command, line, "error", {
             code = code, message = "failed to reach photo pose", recoverable = false,
         })
-    elseif command == "pick_to_inspection" then
+    elseif command == "check_photo" then
         local request_ok, request_error = validate_request_context(line)
         if not request_ok then
             send_status(socket, command_id, "error", {
@@ -1180,44 +727,25 @@ local function handle_line(socket, line)
             })
             return true
         end
-        local job, parse_error = parse_stack_pick_job(line)
-        if job == nil then
-            send_status(socket, command_id, "error", {
-                code = parse_error, message = "invalid task3 inspection fields", recoverable = true,
-            })
-            return true
-        end
-        local poses, pose_error = build_stack_pick_poses(job)
-        if poses == nil then
-            send_status(socket, command_id, "error", {
-                code = pose_error, message = "task3 inspection pose outside workspace", recoverable = false,
-            })
-            return true
-        end
-
         send_status(socket, command_id, "accepted", {cmd = command})
-        local ok, code, holding_part, failed_phase = pick_to_inspection(
-            socket, command_id, job, poses
-        )
-        if ok then
-            return cache_and_send_terminal(socket, command_id, command, line, "done", {
-                phase = "at_place_inspection", holding_part = true,
+        local values, at_photo, code = current_photo_state()
+        if values == nil then
+            return cache_and_send_terminal(socket, command_id, command, line, "error", {
+                code = code, message = "failed to read current pose", recoverable = false,
             })
         end
-        if holding_part and not CFG.vacuum.keep_on_after_pick_error then
-            set_vacuum(false)
-            active_hold = nil
-            holding_part = false
-        end
-        return cache_and_send_terminal(socket, command_id, command, line, "error", {
-            code = code,
-            message = holding_part and "motion failed while holding task3 part"
-                or "task3 pick/inspection failed",
-            recoverable = false,
-            holding_part = holding_part,
-            phase = failed_phase,
+        return cache_and_send_terminal(socket, command_id, command, line, "done", {
+            phase = at_photo and "at_photo" or "away_from_photo",
+            at_photo = at_photo,
+            current_pose = string.format(
+                "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
+                values[1], values[2], values[3], values[4], values[5], values[6]
+            ),
+            current_x = values[1], current_y = values[2], current_z = values[3],
+            current_rx = values[4], current_ry = values[5], current_rz = values[6],
+            holding_part = false,
         })
-    elseif command == "place_from_inspection" then
+    elseif command == "pick_place_direct" then
         local request_ok, request_error = validate_request_context(line)
         if not request_ok then
             send_status(socket, command_id, "error", {
@@ -1225,23 +753,40 @@ local function handle_line(socket, line)
             })
             return true
         end
-        local job, parse_error = parse_stack_release_job(line)
-        if job == nil then
+
+        -- Python 在启动识别前检查一次；Lua 在真正运动前再次读取实机位姿，
+        -- 防止识别期间机械臂被移离拍照位。
+        local current, at_photo, pose_error = current_photo_state()
+        if current == nil then
             send_status(socket, command_id, "error", {
-                code = parse_error, message = "invalid task3 visual placement fields", recoverable = false,
+                code = pose_error, message = "failed to read current pose", recoverable = false,
             })
             return true
         end
-        local poses, pose_error = build_stack_release_poses(job)
-        if poses == nil then
+        if not at_photo then
             send_status(socket, command_id, "error", {
-                code = pose_error, message = "task3 visual placement pose outside workspace", recoverable = false,
+                code = "NOT_AT_PHOTO",
+                message = "robot is not at photo pose",
+                recoverable = true,
+                current_pose = string.format(
+                    "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
+                    current[1], current[2], current[3], current[4], current[5], current[6]
+                ),
             })
             return true
         end
 
+        local job, parse_error = parse_direct_job(line)
+        if job == nil then
+            send_status(socket, command_id, "error", {
+                code = parse_error, message = "invalid direct pick/place fields", recoverable = true,
+            })
+            return true
+        end
+        local poses = build_direct_poses(job)
+
         send_status(socket, command_id, "accepted", {cmd = command})
-        local ok, code, holding_part, failed_phase = place_from_inspection(
+        local ok, code, holding_part, failed_phase = pick_and_place_direct(
             socket, command_id, poses
         )
         if ok then
@@ -1251,56 +796,15 @@ local function handle_line(socket, line)
         end
         if holding_part and not CFG.vacuum.keep_on_after_pick_error then
             set_vacuum(false)
-            active_hold = nil
             holding_part = false
         end
         return cache_and_send_terminal(socket, command_id, command, line, "error", {
             code = code,
-            message = holding_part and "visual placement failed while holding task3 part"
-                or "visual placement failed after release",
+            message = holding_part and "direct motion failed while holding task3 part"
+                or "direct pick/place failed",
             recoverable = false,
             holding_part = holding_part,
             phase = failed_phase,
-        })
-    elseif command == "pick_place" then
-        local request_ok, request_error = validate_request_context(line)
-        if not request_ok then
-            send_status(socket, command_id, "error", {
-                code = request_error, message = "Python/Lua config mismatch", recoverable = false,
-            })
-            return true
-        end
-        -- 数值和全部派生点在 accepted 前校验，非法数据绝不会启动运动。
-        local job, parse_error = parse_pick_job(line)
-        if job == nil then
-            send_status(socket, command_id, "error", {
-                code = parse_error, message = "invalid pick/place fields", recoverable = true,
-            })
-            return true
-        end
-        local poses, pose_error = build_job_poses(job)
-        if poses == nil then
-            send_status(socket, command_id, "error", {
-                code = pose_error, message = "derived pose outside workspace", recoverable = false,
-            })
-            return true
-        end
-
-        send_status(socket, command_id, "accepted", {cmd = command})
-        local ok, code, holding_part = pick_and_place(socket, command_id, line)
-        if ok then
-            return cache_and_send_terminal(
-                socket, command_id, command, line, "done", {phase = "at_photo"}
-            )
-        end
-        if holding_part and not CFG.vacuum.keep_on_after_pick_error then
-            set_vacuum(false)
-        end
-        return cache_and_send_terminal(socket, command_id, command, line, "error", {
-            code = code,
-            message = holding_part and "motion failed while holding part" or "pick/place failed",
-            recoverable = false,
-            holding_part = holding_part,
         })
     end
 

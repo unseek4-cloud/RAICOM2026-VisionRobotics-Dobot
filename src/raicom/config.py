@@ -18,6 +18,15 @@ except ImportError as exc:  # pragma: no cover - 由入口给出更友好的环�
 
 
 _MISSING = object()
+PLACE_POSE_CLASSES = (
+    "大圆柱",
+    "正方体",
+    "梯形",
+    "长方体",
+    "圆柱",
+    "六棱柱",
+    "平行四边形",
+)
 
 
 class SettingsError(RuntimeError):
@@ -27,7 +36,7 @@ class SettingsError(RuntimeError):
 class Settings:
     """YAML 配置的只读访问器。
 
-    使用 ``get('robot.motion.pick_lift_mm')`` 读取嵌套字段；所有相对路径都以
+    使用 ``get('robot.photo_pose_mm_deg')`` 读取嵌套字段；所有相对路径都以
     项目根目录（配置文件的上一级目录）为基准，避免从不同工作目录启动时失效。
     """
 
@@ -85,9 +94,9 @@ class Settings:
         return dict(self._data)
 
     def task_max_objects(self, task_name: str) -> int:
-        """返回任务二/三单次运行允许分拣的最大工件数。"""
+        """返回 3D 识别抓取单次运行允许分拣的最大工件数。"""
 
-        if task_name not in {"task2", "task3"}:
+        if task_name != "task3":
             raise SettingsError(f"不支持配置分拣数量的任务：{task_name}")
         key = f"tasks.{task_name}.max_objects"
         value = self.get(key, None)
@@ -96,9 +105,9 @@ class Settings:
         return value
 
     def task_recognition_region(self, task_name: str) -> tuple[float, float, float, float]:
-        """返回任务二/三的归一化识别区域 ``(x1, y1, x2, y2)``。"""
+        """返回 3D 识别抓取的归一化识别区域。"""
 
-        if task_name not in {"task2", "task3"}:
+        if task_name != "task3":
             raise SettingsError(f"不支持配置识别区域的任务：{task_name}")
         key = f"tasks.{task_name}.recognition_region"
         try:
@@ -121,9 +130,8 @@ class Settings:
             if not isinstance(self.get(key, None), Mapping):
                 raise SettingsError(f"缺少配置节或类型错误：{key}")
 
-        for task_name in ("task2", "task3"):
-            self.task_max_objects(task_name)
-            self.task_recognition_region(task_name)
+        self.task_max_objects("task3")
+        self.task_recognition_region("task3")
 
         try:
             timeout = float(self.get("application.competition_timeout_s", 600))
@@ -166,10 +174,7 @@ class Settings:
         )
 
     def validate_real_run(self) -> list[str]:
-        """返回真机运行前仍未解决的参数问题；空列表表示结构上可运行。
-
-        这只是软件级防呆，不替代人工确认工作空间、实体急停和低速试运行。
-        """
+        """返回真机运行前仍未解决的必需配置问题。"""
         issues: list[str] = []
 
         calibration_path = self.resolve_path("calibration.eih_yaml")
@@ -179,18 +184,17 @@ class Settings:
                 f"{calibration_path}（请把现场生成的 YAML 放到这里）"
             )
 
-        for task_name in ("task2", "task3"):
-            model_path = self.resolve_path(f"yolo.{task_name}.model")
-            if not model_path.is_file():
-                issues.append(f"缺少 {task_name} YOLO 模型：{model_path}")
+        model_path = self.resolve_path("yolo.task3.model")
+        if not model_path.is_file():
+            issues.append(f"缺少 3D识别抓取 YOLO 模型：{model_path}")
 
         table_depth = self.get("calibration.table_depth_mm", None)
         table_robot_z = self.get("calibration.robot_table_touch_z_mm", None)
         if not self._is_number(table_depth) or float(table_depth) <= 0:
-            issues.append("calibration.table_depth_mm 未填写（抓取区空台面 D435 深度，mm）")
+            issues.append("calibration.table_depth_mm 未填写（检测/放置共用空台面深度，mm）")
         if not self._is_number(table_robot_z):
             issues.append(
-                "calibration.robot_table_touch_z_mm 未填写（吸盘刚贴抓取台面时的机器人 Z，mm）"
+                "calibration.robot_table_touch_z_mm 未填写（吸盘刚贴共用台面时的机器人 Z，mm）"
             )
 
         photo_pose = self.get("robot.photo_pose_mm_deg", None)
@@ -209,64 +213,33 @@ class Settings:
         ):
             issues.append("robot.motion.orientation_mm_deg 必须填写吸盘朝下姿态 [Rx,Ry,Rz]")
         elif not math.isclose(float(orientation[2]), 0.0, abs_tol=1e-6):
-            issues.append("robot.motion.orientation_mm_deg[2] 必须为 0（工件放置回正基准）")
+            issues.append("robot.motion.orientation_mm_deg[2] 必须为 0（抓取动态 RZ 的基准）")
 
         for key in ("robot.user_coordinate_index", "robot.tool_coordinate_index"):
             value = self.get(key, None)
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 9:
                 issues.append(f"{key} 必须填写 0~9 的现场坐标系编号")
 
-        workspace = self.get("robot.workspace_mm", {})
-        for axis in ("x", "y", "z"):
-            bounds = workspace.get(axis) if isinstance(workspace, Mapping) else None
-            if (
-                not isinstance(bounds, list)
-                or len(bounds) != 2
-                or not all(self._is_number(v) for v in bounds)
-                or float(bounds[0]) >= float(bounds[1])
-            ):
-                issues.append(f"robot.workspace_mm.{axis} 必须填写有效的 [最小值, 最大值]")
+        for key in ("robot.photo_pose_tolerance_mm", "robot.photo_pose_tolerance_deg"):
+            value = self.get(key, None)
+            if not self._is_number(value) or float(value) <= 0:
+                issues.append(f"{key} 必须填写大于 0 的有限数值")
 
-        if (
-            isinstance(photo_pose, list)
-            and len(photo_pose) == 6
-            and all(self._is_number(value) for value in photo_pose)
-            and isinstance(workspace, Mapping)
-        ):
-            for index, axis in enumerate(("x", "y", "z")):
-                bounds = workspace.get(axis)
-                if (
-                    isinstance(bounds, list)
-                    and len(bounds) == 2
-                    and all(self._is_number(value) for value in bounds)
-                    and not float(bounds[0]) <= float(photo_pose[index]) <= float(bounds[1])
-                ):
-                    issues.append(
-                        f"robot.photo_pose_mm_deg.{axis}={float(photo_pose[index]):g} "
-                        f"超出 robot.workspace_mm.{axis}={bounds}"
-                    )
-
-        for task_name in ("task2", "task3"):
-            points = self.get(f"robot.place_points.{task_name}", {})
-            if not isinstance(points, Mapping) or not points:
-                issues.append(f"robot.place_points.{task_name} 至少需要一个放置点")
-                continue
-            for name, point in points.items():
-                if not isinstance(point, Mapping):
-                    issues.append(f"放置点 {task_name}.{name} 格式错误")
+        poses = self.get("robot.place_poses_mm_deg", {})
+        if not isinstance(poses, Mapping):
+            issues.append("robot.place_poses_mm_deg 必须列出七类工件放置位姿")
+        else:
+            for class_name in PLACE_POSE_CLASSES:
+                pose = poses.get(class_name)
+                key = f"robot.place_poses_mm_deg.{class_name}"
+                if not isinstance(pose, list) or len(pose) != 6:
+                    issues.append(f"{key} 必须为 [X,Y,Z,Rx,Ry,Rz]")
                     continue
-                fields = (
-                    ("x_mm", "y_mm")
-                    if task_name == "task3"
-                    else ("x_mm", "y_mm", "down_mm")
-                )
-                values = [point.get(field) for field in fields]
-                # default 是必须的安全兜底；其他预置颜色点可整组留空，现场用到再填写。
-                if name != "default" and all(value is None for value in values):
-                    continue
-                for field, value in zip(fields, values):
-                    if not self._is_number(value):
-                        issues.append(f"放置点 {task_name}.{name}.{field} 未填写")
+                if pose[2] is not None:
+                    issues.append(f"{key}[2] 必须为 null（P2.Z 直接复用 P1.Z）")
+                for index, field in ((0, "X"), (1, "Y"), (3, "Rx"), (4, "Ry"), (5, "Rz")):
+                    if not self._is_number(pose[index]):
+                        issues.append(f"{key} 的 {field} 未填写有效数值")
 
         pc_server_ip = str(self.get("robot.lua.pc_server_ip", "")).strip()
         if not pc_server_ip:
@@ -284,14 +257,7 @@ class Settings:
         if lua_port != bridge_port:
             issues.append("robot.lua.pc_server_port 必须与 network.robot_bridge.port 完全一致")
 
-        z_up_sign = self.get("robot.motion.z_up_sign", 1)
-        if z_up_sign not in (-1, 1):
-            issues.append("robot.motion.z_up_sign 只能是 1 或 -1")
-
         for key in (
-            "robot.motion.approach_mm",
-            "robot.motion.pick_lift_mm",
-            "robot.motion.release_retract_mm",
             "robot.vacuum.suction_wait_ms",
             "robot.vacuum.release_wait_ms",
         ):
@@ -299,62 +265,12 @@ class Settings:
             if not self._is_number(value) or float(value) <= 0:
                 issues.append(f"{key} 必须填写大于 0 的有限数值")
 
-        for task_name in ("task2", "task3"):
-            angle_tolerance = self.get(
-                f"tasks.{task_name}.stable_angle_tolerance_deg", None
-            )
-            if (
-                not self._is_number(angle_tolerance)
-                or not 0 < float(angle_tolerance) <= 45
-            ):
-                issues.append(
-                    f"tasks.{task_name}.stable_angle_tolerance_deg 必须在 (0,45]"
-                )
-
-        inspection_z = self.get("robot.motion.place_inspection_z_mm", None)
-        if not self._is_number(inspection_z):
-            issues.append("robot.motion.place_inspection_z_mm 必须填写任务三视觉观察位 Z")
-        else:
-            z_bounds = workspace.get("z") if isinstance(workspace, Mapping) else None
-            if (
-                isinstance(z_bounds, list)
-                and len(z_bounds) == 2
-                and all(self._is_number(value) for value in z_bounds)
-                and not float(z_bounds[0]) <= float(inspection_z) <= float(z_bounds[1])
-            ):
-                issues.append("robot.motion.place_inspection_z_mm 超出 robot.workspace_mm.z")
-
-        placement_numbers = {
-            "tasks.task3.placement_vision.depth_min_mm": (0.0, False),
-            "tasks.task3.placement_vision.place_table_depth_mm": (0.0, False),
-            "tasks.task3.placement_vision.press_down_mm": (0.0, True),
-            "tasks.task3.placement_vision.sample_radius_mm": (0.0, False),
-            "tasks.task3.placement_vision.max_surface_spread_mm": (0.0, False),
-            "tasks.task3.placement_vision.min_descent_clearance_mm": (0.0, False),
-        }
-        for key, (minimum, allow_equal) in placement_numbers.items():
-            value = self.get(key, None)
-            invalid_bound = self._is_number(value) and (
-                float(value) < minimum if allow_equal else float(value) <= minimum
-            )
-            if not self._is_number(value) or invalid_bound:
-                relation = "不小于" if allow_equal else "大于"
-                issues.append(f"{key} 必须填写{relation} {minimum:g} 的有限数值")
-        place_table_touch_z = self.get(
-            "tasks.task3.placement_vision.place_table_touch_z_mm", None
-        )
-        if not self._is_number(place_table_touch_z):
-            issues.append(
-                "tasks.task3.placement_vision.place_table_touch_z_mm "
-                "必须填写有限实测值"
-            )
-        for key, minimum in (
-            ("tasks.task3.placement_vision.temporal_samples", 1),
-            ("tasks.task3.placement_vision.min_valid_points", 3),
+        angle_tolerance = self.get("tasks.task3.stable_angle_tolerance_deg", None)
+        if (
+            not self._is_number(angle_tolerance)
+            or not 0 < float(angle_tolerance) <= 45
         ):
-            value = self.get(key, None)
-            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-                issues.append(f"{key} 必须填写不小于 {minimum} 的整数")
+            issues.append("tasks.task3.stable_angle_tolerance_deg 必须在 (0,45]")
 
         for key in (
             "robot.motion.travel_speed_percent",

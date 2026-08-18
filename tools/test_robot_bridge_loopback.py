@@ -22,7 +22,7 @@ if str(SRC) not in sys.path:
 from raicom.config import Settings  # noqa: E402
 from raicom.events import EventBus  # noqa: E402
 from raicom.robot import LuaBridgeServer, MockRobot  # noqa: E402
-from raicom.types import PickTarget  # noqa: E402
+from raicom.types import DirectPlaceTarget  # noqa: E402
 
 
 def _free_port() -> int:
@@ -50,13 +50,11 @@ def _settings(port: int) -> Settings:
     robot["user_coordinate_index"] = 0
     robot["tool_coordinate_index"] = 0
     robot["photo_pose_mm_deg"] = [200.0, 0.0, 250.0, 180.0, 0.0, 0.0]
+    robot["photo_pose_tolerance_mm"] = 2.0
+    robot["photo_pose_tolerance_deg"] = 2.0
     robot["motion"].update(
         {
             "orientation_mm_deg": [180.0, 0.0, 0.0],
-            "z_up_sign": 1,
-            "approach_mm": 40.0,
-            "pick_lift_mm": 80.0,
-            "release_retract_mm": 60.0,
             "travel_speed_percent": 10,
             "pick_speed_percent": 5,
             "acceleration_percent": 20,
@@ -159,6 +157,21 @@ class _OneShotLua(threading.Thread):
                 + _encode({"v": 1, "id": command_id, "status": "done", "phase": "idle"})
             )
             return True
+        if command == "check_photo":
+            sock.sendall(
+                _encode({"v": 1, "id": command_id, "status": "accepted"})
+                + _encode(
+                    {
+                        "v": 1,
+                        "id": command_id,
+                        "status": "done",
+                        "phase": "at_photo",
+                        "at_photo": True,
+                        "current_pose": "200,0,250,180,0,0",
+                    }
+                )
+            )
+            return True
 
         if command_id in self.completed:
             assert command_id == self.pick_id
@@ -179,9 +192,16 @@ class _OneShotLua(threading.Thread):
         # 为并发互斥测试留出稳定窗口；实际 Lua 执行动作远慢于此。
         time.sleep(0.12)
         self.motion_accepted.clear()
-        terminal = {"v": 1, "id": command_id, "status": "done", "phase": "at_photo"}
+        terminal = {
+            "v": 1,
+            "id": command_id,
+            "status": "done",
+            "phase": "at_photo",
+        }
+        if command == "pick_place_direct":
+            terminal["holding_part"] = False
 
-        if command == "pick_place" and not self.did_drop:
+        if command == "pick_place_direct" and not self.did_drop:
             self.did_drop = True
             self.pick_id = command_id
             self.completed[command_id] = terminal
@@ -223,37 +243,38 @@ def main() -> int:
         photo = photo_holder["reply"]
         assert photo.status == "done" and photo.raw.get("phase") == "at_photo", photo
 
-        target = PickTarget(
-            task="task2",
+        target = DirectPlaceTarget(
+            task="task3",
             object_id="obj-1",
-            pick_x_mm=100.0,
-            pick_y_mm=50.0,
-            pick_z_mm=20.0,
+            pick_x_mm=200.0,
+            pick_y_mm=0.0,
+            pick_z_mm=120.0,
             pick_rz_deg=28.0,
             place_x_mm=250.0,
             place_y_mm=120.0,
-            place_down_mm=50.0,
-            route_key="red",
+            place_rx_deg=180.0,
+            place_ry_deg=0.0,
+            place_rz_deg=35.0,
+            route_key="正方体",
         )
-        picked = bridge.pick_and_place(target)
+        checked = bridge.is_at_photo()
+        assert checked.status == "done" and checked.raw.get("at_photo") is True, checked
+        picked = bridge.pick_and_place_direct(target)
         assert picked.status == "done" and picked.command_id == lua.pick_id, picked
         assert lua.did_drop, "未执行断线重连路径"
 
         photo_request = next(item for item in lua.received if item.get("cmd") == "go_photo")
         assert photo_request["settle_ms"] == 300.0
-        assert "release_retract_mm" not in photo_request
-        pick_requests = [item for item in lua.received if item.get("cmd") == "pick_place"]
+        pick_requests = [
+            item for item in lua.received if item.get("cmd") == "pick_place_direct"
+        ]
         assert len(pick_requests) == 2, "掉线后未恰好以同一命令重发一次"
         assert pick_requests[0] == pick_requests[1], "重连后命令 ID 或载荷发生变化"
         pick_request = pick_requests[0]
-        assert pick_request["approach_z"] == 60.0
-        assert pick_request["transfer_z"] == 100.0
-        assert pick_request["pick_rz"] == 28.0
-        assert pick_request["place_rz"] == 0.0
-        assert pick_request["place_z"] == 50.0
-        assert pick_request["retract_z"] == 110.0
+        assert pick_request["place_rz"] == 35.0
+        assert pick_request["place_z"] == pick_request["pick_z"] == 120.0
         assert pick_request["settle_ms"] == 300.0
-        assert "release_retract_mm" not in pick_request
+        assert not any(key.startswith("workspace_") for key in pick_request)
 
         # 空闲时间超过 heartbeat_s；pong 后连接应继续有效。
         time.sleep(0.8)
@@ -275,7 +296,7 @@ def main() -> int:
         assert mock.go_photo().status == "done"
         mock_holder: dict[str, Any] = {}
         mock_thread = threading.Thread(
-            target=lambda: mock_holder.setdefault("reply", mock.pick_and_place(target)),
+            target=lambda: mock_holder.setdefault("reply", mock.pick_and_place_direct(target)),
             daemon=True,
         )
         mock_thread.start()
@@ -283,6 +304,7 @@ def main() -> int:
         mock.request_stop()
         mock_thread.join(timeout=2.0)
         assert mock_holder["reply"].status == "done", "普通停止错误地抢断了当前模拟动作"
+        assert mock.is_at_photo().raw.get("at_photo") is True
         mock.stop()
 
         # 运动结果超时后必须立即隔离旧连接；模拟 Lua 完成旧动作后才能重新连入。
@@ -296,7 +318,7 @@ def main() -> int:
 
         print(
             "LuaBridgeServer 回环测试：PASS（互斥、拆包、粘包、同ID重连、"
-            "派生Z、心跳、普通停止、超时隔离、模拟器）"
+            "同Z直接抓放、心跳、普通停止、超时隔离、模拟器）"
         )
         return 0
     finally:

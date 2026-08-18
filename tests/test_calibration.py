@@ -21,9 +21,7 @@ from raicom.types import CameraIntrinsics  # noqa: E402
 from raicom.vision.calibration import (  # noqa: E402
     CalibrationError,
     CalibrationModel,
-    _pose_matrix,
 )
-from raicom.vision.realsense_camera import FrameBundle  # noqa: E402
 
 
 def _real_calibration_settings(*, press_down_mm: float = 2.0) -> Settings:
@@ -40,11 +38,6 @@ def _real_calibration_settings(*, press_down_mm: float = 2.0) -> Settings:
         }
     )
     data["robot"]["photo_pose_mm_deg"] = [160.0, -95.0, 400.0, 180.0, 0.0, 0.0]
-    data["robot"]["workspace_mm"] = {
-        "x": [-1000.0, 1000.0],
-        "y": [-1000.0, 1000.0],
-        "z": [-1000.0, 1000.0],
-    }
     return Settings(data, PROJECT_ROOT / "config" / "settings.yaml")
 
 
@@ -92,76 +85,16 @@ class CalibrationModelTests(unittest.TestCase):
         with self.assertRaises(CalibrationError):
             model.locate((320, 240), 705.0, self.intrinsics)
 
-    def test_dynamic_place_surface_uses_current_tip_pose_not_pick_table(self) -> None:
-        model = CalibrationModel.from_settings(_real_calibration_settings())
-        inspection_pose = model.placement_inspection_pose(
-            (250.0, 120.0), 430.0, (180.0, 0.0, 0.0)
-        )
-        assert model.camera_to_tip_mm is not None
-        base_from_camera = (
-            _pose_matrix(inspection_pose, model.pose_rotation_order)
-            @ model.camera_to_tip_mm
-        )
-        rotation = base_from_camera[:3, :3]
-        translation = base_from_camera[:3, 3]
-
-        rows, cols = np.indices((self.intrinsics.height, self.intrinsics.width))
-        rays = np.stack(
-            (
-                (cols - self.intrinsics.ppx) / self.intrinsics.fx,
-                (rows - self.intrinsics.ppy) / self.intrinsics.fy,
-                np.ones_like(rows, dtype=np.float64),
-            ),
-            axis=-1,
-        )
-        target_surface_z = 80.0  # 与抓取台面的 100 mm 故意不同。
-        denominator = rays @ rotation[2, :]
-        depth = (target_surface_z - translation[2]) / denominator
-        bundle = FrameBundle(
-            color_bgr=np.zeros((480, 640, 3), dtype=np.uint8),
-            depth_mm=depth.astype(np.float32),
-            intrinsics=self.intrinsics,
-        )
-
-        surface, measured_depth, valid_points = model.locate_surface_at_robot_xy(
-            bundle,
-            (250.0, 120.0),
-            inspection_pose,
-            depth_min_mm=50.0,
-            depth_max_mm=1500.0,
-            radius_mm=8.0,
-            min_points=20,
-        )
-        self.assertAlmostEqual(surface[0], 250.0, delta=0.5)
-        self.assertAlmostEqual(surface[1], 120.0, delta=0.5)
-        self.assertAlmostEqual(surface[2], target_surface_z, places=4)
-        self.assertGreater(measured_depth, 0.0)
-        self.assertGreaterEqual(valid_points, 20)
-
-    def test_configured_task3_inspection_pose_is_inside_real_workspace(self) -> None:
-        settings = Settings.load(PROJECT_ROOT / "config" / "settings.yaml")
-        model = CalibrationModel.from_settings(settings)
-        place = settings.get("robot.place_points.task3.default")
-        orientation = tuple(settings.get("robot.motion.orientation_mm_deg"))
-        pose = model.placement_inspection_pose(
-            (float(place["x_mm"]), float(place["y_mm"])),
-            float(settings.get("robot.motion.place_inspection_z_mm")),
-            orientation,
-        )
-        model.validate_workspace(pose[:3])
-
-    def test_real_run_rejects_photo_pose_outside_workspace(self) -> None:
+    def test_real_run_does_not_apply_software_workspace_limits(self) -> None:
         base = Settings.load(PROJECT_ROOT / "config" / "settings.yaml")
         data = copy.deepcopy(base.as_dict())
-        data["robot"]["photo_pose_mm_deg"][0] = 154.0
+        data["robot"]["photo_pose_mm_deg"][0] = 1000000.0
         settings = Settings(data, PROJECT_ROOT / "config" / "settings.yaml")
 
         issues = settings.validate_real_run()
 
-        self.assertTrue(
-            any("robot.photo_pose_mm_deg.x=154" in issue for issue in issues),
-            issues,
-        )
+        self.assertFalse(any("workspace" in issue.lower() for issue in issues), issues)
+        self.assertNotIn("workspace_mm", data["robot"])
 
 
 if __name__ == "__main__":

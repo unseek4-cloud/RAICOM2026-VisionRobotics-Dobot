@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """2026 睿抗机器视觉赛项主程序入口。
 
-默认进入安全的模拟模式；只有显式传入 ``--real`` 且现场参数校验通过时，
+默认进入模拟模式；只有显式传入 ``--real`` 且现场必要参数完整时，
 程序才会连接真实相机、YOLO 模型和 DobotStudio Pro 执行脚本。
 """
 
@@ -35,7 +35,7 @@ def _configure_utf8_console() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="睿抗 2026 视觉系统创新赛：2D + YOLO + RealSense + 越疆 E6"
+        description="3D识别抓取：YOLO-OBB + RealSense + 越疆 E6"
     )
     parser.add_argument(
         "--config",
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--real",
         action="store_true",
-        help="显式允许真实硬件运行；仍需通过全部安全参数校验",
+        help="连接真实硬件运行；需填写相机、模型、标定和机器人现场参数",
     )
     parser.add_argument(
         "--headless",
@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task",
-        choices=("all", "task1", "task2", "task3"),
+        choices=("all", "task1", "task3"),
         default="all",
         help="无界面模式要运行的任务",
     )
@@ -82,7 +82,7 @@ def main() -> int:
         print(f"[配置错误] {exc}", file=sys.stderr)
         return 2
 
-    # 安全设计：配置文件不能单独开启真机，必须同时显式使用 --real。
+    # 配置文件不能单独开启真机，必须同时显式使用 --real。
     real_mode = bool(args.real)
     if args.demo:
         real_mode = False
@@ -96,7 +96,7 @@ def main() -> int:
     if real_mode:
         issues = settings.validate_real_run()
         if issues:
-            print("[安全拦截] 真机参数尚未填写完整，程序拒绝运动：", file=sys.stderr)
+            print("[配置错误] 真机必要参数尚未填写完整：", file=sys.stderr)
             for issue in issues:
                 print(f"  - {issue}", file=sys.stderr)
             print("请按 README 的『比赛前必须填写』章节逐项设置。", file=sys.stderr)
@@ -123,4 +123,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
