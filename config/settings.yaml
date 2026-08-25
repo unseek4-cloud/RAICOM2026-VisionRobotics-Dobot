@@ -69,7 +69,7 @@ yolo:
   # 抓取角度只接受 Ultralytics OBB 权重；普通 detect 水平框会在初始化时被拒绝。
   device: "cuda:0"                # CUDA 不可用时程序自动回退 CPU 并报警
   image_size: 640
-  confidence: 0.85
+  confidence: 0.85     #置信度
   iou: 0.45
   max_detections: 20
   chinese_font: "C:/Windows/Fonts/msyh.ttc"
@@ -94,16 +94,16 @@ calibration:
   pose_rotation_order: "zyx"
 
   # ★现场必填：机械臂固定在拍照位、检测/放置共用空台面时的深度中值。
-  table_depth_mm: 398
+  table_depth_mm: 350   #要改    python tools/measure_table_depth.py
 
   # ★现场必填：吸盘刚好贴到检测/放置共用台面时机械臂 TCP 的 Z。
-  robot_table_touch_z_mm: 100.0
+  robot_table_touch_z_mm: 98.0
 
   # 用户指定的计算式：抓取Z = 台面机器人Z + (空台深度 - 工件中心深度)。
   # 正的 press_down_mm 会让吸盘在计算表面基础上再向下压一点；初次验证保持 0。
-  press_down_mm: 1.0
-  xy_offset_mm: [2.5, 0]  #[5.0, 12.8] [6.0, 5.0]  # ★现场必填：相机光心到吸盘中心的 XY 偏移，单位 mm。正值表示相机在吸盘前方/右方。
-  min_object_height_mm: 0.0
+  press_down_mm: 1.0  #
+  xy_offset_mm: [2.5, 0]  #[5.0, 12.8] [6.0, 5.0]  # ★现场必填：相机光心到吸盘中心的 XY 偏移，单位 mm。正值表示相机在吸盘前方/右方。  
+  min_object_height_mm: -1.0
   max_object_height_mm: 120.0
 
 robot:
@@ -113,7 +113,7 @@ robot:
 
   # ★现场必填：相机完成 EIH 标定时使用的同一 Tip/TCP 在固定拍照位的位姿。
   # [X, Y, Z, Rx, Ry, Rz]，单位 mm/degree。
-  photo_pose_mm_deg: [160, -60, 430, 180, 0, 0]
+  photo_pose_mm_deg: [60, 150, 380, 180, 0, 90]   #      
   # 判断“当前是否在拍照位”的位置/姿态允许误差，不属于运动工作空间限位。
   photo_pose_tolerance_mm: 2.0
   photo_pose_tolerance_deg: 2.0
@@ -121,7 +121,7 @@ robot:
   motion:
     # 抓取姿态：Rx/Ry 固定吸盘朝下；抓取 Rz 由 OBB+EIH 动态计算。
     # 放置姿态不再自动回正为 0，而是逐工件读取 place_poses_mm_deg。
-    orientation_mm_deg: [180.0, 0, 0]
+    orientation_mm_deg: [180.0, 0, 90]   ##
     # P1 与 P2 使用相同 Z，由 DobotStudio Pro 的 MovJ 直接规划 P1→P2。
     travel_speed_percent: 20
     pick_speed_percent: 10
@@ -150,7 +150,7 @@ robot:
   # ★现场必填：七类工件的放置位姿，统一格式 [X, Y, Z, Rx, Ry, Rz]。
   # Z 必须保持 null；运行时 P2.Z 直接复用识别得到的 P1.Z。
   # X、Y、Rx、Ry、Rz 必须现场示教填写。
-  place_poses_mm_deg:
+  place_poses_mm_deg:  #11
     大圆柱:       [null, null, null, null, null, null]
     正方体:       [null, null, null, null, null, null]
     梯形:         [null, null, null, null, null, null]

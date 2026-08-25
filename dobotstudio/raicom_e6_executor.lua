@@ -35,15 +35,15 @@ local CFG = {
     user_index = 0,
     tool_index = 0,
 
-    -- ★现场必填：固定拍照位 [X,Y,Z,Rx,Ry,Rz]，不能用 Home() 代替。
+    -- ★现场必填：固定拍照位 [X,Y,Z,Rx,Ry,Rz]，不能用 Home() 代替。  
     photo_pose = {
         x = 160.0, y = -60.0, z = 430.0,
         rx = 180.0, ry = 0, rz = 0,
-    },
+    },  
     photo_tolerance_mm = 2.0,
     photo_tolerance_deg = 2.0,
 
-    -- ★现场必填：吸盘抓取姿态；rz=0 是动态抓取 RZ 基准，放置姿态由 Python 逐类下发。
+    -- ★现场必填：吸盘抓取姿态；rz=0 是动态抓取 RZ 基准，放置姿态由 Python 逐类下发。     
     pick_orientation = {rx = 180.0, ry = 0, rz = 0},
 
     -- 运动参数。P1 与 P2 使用相同 Z，由 MovJ 直接规划 P1→P2。
